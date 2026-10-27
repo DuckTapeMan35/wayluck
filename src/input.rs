@@ -86,12 +86,17 @@ impl Wayluck {
         let serial = SERIAL_COUNTER.next_serial();
         let state = event.state();
         if state == ButtonState::Pressed && !pointer.is_grabbed() {
-            // Stand-in: focus what was clicked (nothing, on the background).
             let clicked = self
                 .space
                 .element_under(pointer.current_location())
                 .and_then(|(w, _)| w.toplevel().and_then(|t| Windows::id_of(t.wl_surface())));
-            self.focus(clicked);
+            // The window manager decides about focus; without one, what was
+            // clicked gets it (nothing, on the background).
+            if self.wm.manager.is_none() {
+                self.focus(clicked);
+            } else if let Some(id) = clicked {
+                self.wm_focus_request(id);
+            }
         }
         pointer.button(
             self,

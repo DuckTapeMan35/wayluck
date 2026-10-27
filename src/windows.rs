@@ -89,6 +89,8 @@ pub enum Change {
     Place(WindowId, Rectangle<i32, Logical>),
     /// Stop showing a window.
     Hide(WindowId),
+    /// Give a window the keyboard (None: no window has it).
+    Focus(Option<WindowId>),
 }
 
 impl Wayluck {
@@ -108,8 +110,11 @@ impl Wayluck {
     pub fn apply(&mut self, changes: Vec<Change>) -> Result<(), &'static str> {
         // Check everything first, so nothing is half done.
         for change in &changes {
-            let (Change::Place(id, _) | Change::Hide(id)) = change;
-            if self.windows.get(*id).is_none() {
+            let id = match change {
+                Change::Place(id, _) | Change::Hide(id) | Change::Focus(Some(id)) => *id,
+                Change::Focus(None) => continue,
+            };
+            if self.windows.get(id).is_none() {
                 return Err("a window in it is gone");
             }
             if let Change::Place(_, rect) = change
@@ -135,6 +140,7 @@ impl Wayluck {
                     let window = self.windows.get(id).unwrap().clone();
                     self.space.unmap_elem(&window);
                 }
+                Change::Focus(id) => self.focus(id),
             }
         }
         Ok(())

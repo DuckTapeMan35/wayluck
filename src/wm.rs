@@ -145,6 +145,7 @@ impl Dispatch<WayluckWmTransactionV1, Transaction> for Wayluck {
             }
             Request::Hide { window } => Some(Change::Hide(id_of(&window))),
             Request::Commit => None,
+            Request::Focus { window } => Some(Change::Focus(window.as_ref().map(id_of))),
         };
         let mut pending = data.pending.lock().unwrap();
         if pending.committed {
@@ -262,6 +263,14 @@ impl Wayluck {
         let resource = self.wm.windows.get(&id)?;
         let toplevel = self.windows.get(id)?.toplevel()?;
         Some((resource, windows::names(toplevel)))
+    }
+
+    /// The user clicked a window: the window manager hears so, and decides
+    /// about focus.
+    pub fn wm_focus_request(&self, id: WindowId) {
+        if let Some(resource) = self.wm.windows.get(&id) {
+            resource.focus_request();
+        }
     }
 
     /// A window is gone: the window manager hears so, and should destroy it.

@@ -111,6 +111,13 @@
         It's no longer shown, and placing it does nothing.
       </description>
     </event>
+
+    <event name="focus_request">
+      <description summary="the user clicked it">
+        wayluck doesn't focus it: the window manager decides, with a
+        transaction's focus.
+      </description>
+    </event>
   </interface>
 
   <interface name="wayluck_wm_transaction_v1" version="1">
@@ -147,6 +154,14 @@
 
     <request name="commit">
       <description summary="apply everything in this transaction, together"/>
+    </request>
+
+    <request name="focus">
+      <description summary="give a window the keyboard">
+        With no window, no window has it. The focused window is drawn as
+        active, and raised above the others.
+      </description>
+      <arg name="window" type="object" interface="wayluck_wm_window_v1" allow-null="true"/>
     </request>
 
     <event name="applied">
