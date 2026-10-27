@@ -34,6 +34,7 @@
             rustfmt
             rust-analyzer
             pkg-config
+            wayland-utils
           ];
           buildInputs = with pkgs; [
             libxkbcommon
