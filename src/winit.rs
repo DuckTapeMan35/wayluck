@@ -61,6 +61,7 @@ pub fn init(
                 }
                 output.change_current_state(Some(mode), None, None, None);
                 output.set_preferred(mode);
+                state.wm_output_changed(&output);
             }
             WinitEvent::Redraw => {
                 let rendered = match backend.bind() {
@@ -86,6 +87,8 @@ pub fn init(
                 backend.window().request_redraw();
             }
             WinitEvent::CloseRequested => state.loop_signal.stop(),
+            WinitEvent::Input(event) => state.handle_input(event),
+            WinitEvent::Focus(false) => state.release_all_keys(),
             _ => {}
         })?;
     Ok(())

@@ -1,18 +1,17 @@
 //! xdg-shell: clients' windows (toplevels). wayluck keeps them; it doesn't
 //! show them anywhere until something places them.
 
-use crate::{Wayluck, windows::Windows};
+use crate::{
+    Wayluck,
+    windows::{self, Windows},
+};
 use smithay::{
     delegate_xdg_shell,
     desktop::Window,
     reexports::wayland_server::protocol::{wl_seat, wl_surface::WlSurface},
     utils::Serial,
-    wayland::{
-        compositor::with_states,
-        shell::xdg::{
-            PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-            XdgToplevelSurfaceData,
-        },
+    wayland::shell::xdg::{
+        PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
     },
 };
 
@@ -30,6 +29,19 @@ impl XdgShellHandler for Wayluck {
         if let Some(id) = Windows::id_of(surface.wl_surface()) {
             tracing::info!("window {id} closed: {}", title_of(&surface));
             self.remove_window(id);
+        }
+    }
+
+    // The window manager hears what a window is called, as it changes.
+    fn title_changed(&mut self, surface: ToplevelSurface) {
+        if let Some(id) = Windows::id_of(surface.wl_surface()) {
+            self.wm_window_title(id);
+        }
+    }
+
+    fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        if let Some(id) = Windows::id_of(surface.wl_surface()) {
+            self.wm_window_app_id(id);
         }
     }
 
@@ -64,11 +76,7 @@ pub fn handle_commit(state: &mut Wayluck, surface: &WlSurface) {
 
 /// A toplevel's title, or "(untitled)", for the log.
 fn title_of(surface: &ToplevelSurface) -> String {
-    with_states(surface.wl_surface(), |states| {
-        states
-            .data_map
-            .get::<XdgToplevelSurfaceData>()
-            .and_then(|d| d.lock().unwrap().title.clone())
-    })
-    .unwrap_or_else(|| "(untitled)".into())
+    windows::names(surface)
+        .0
+        .unwrap_or_else(|| "(untitled)".into())
 }

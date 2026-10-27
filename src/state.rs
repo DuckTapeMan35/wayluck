@@ -1,6 +1,6 @@
 //! Everything wayluck keeps, and the socket clients connect to.
 
-use crate::windows::Windows;
+use crate::{windows::Windows, wm::WmState};
 use smithay::{
     desktop::{Space, Window},
     input::{Seat, SeatState},
@@ -29,12 +29,12 @@ pub struct Wayluck {
     pub loop_signal: LoopSignal,
     /// When wayluck started: frame callbacks carry the time since.
     pub start_time: std::time::Instant,
-
+    /// The window manager, if one is bound.
+    pub wm: WmState,
     /// Every client window, in the order they appeared.
     pub windows: Windows,
     /// What's drawn, and where: the outputs, and the windows shown on them.
     pub space: Space<Window>,
-
     // smithay's state for each global wayluck offers.
     pub compositor_state: CompositorState,
     pub shm_state: ShmState,
@@ -56,12 +56,19 @@ impl Wayluck {
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         let mut seat_state = SeatState::new();
-        let seat = seat_state.new_wl_seat(&dh, "seat0");
+        let mut seat = seat_state.new_wl_seat(&dh, "seat0");
+        let wm = WmState::new(&dh);
+        // One keyboard (the default keymap; 200 ms delay, 25 repeats/s) and
+        // one pointer, whatever the backend has.
+        seat.add_keyboard(Default::default(), 200, 25)
+            .expect("the default keymap");
+        seat.add_pointer();
         Self {
             socket_name,
             display_handle: dh,
             loop_signal: event_loop.get_signal(),
             compositor_state,
+            wm,
             shm_state,
             output_manager_state,
             xdg_shell_state,

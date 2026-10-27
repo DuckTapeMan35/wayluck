@@ -1,10 +1,13 @@
 //! wayluck: a Wayland compositor that doesn't decide where windows go.
 
 mod handlers;
+mod input;
+mod protocol;
 mod render;
 mod state;
 mod windows;
 mod winit;
+mod wm;
 
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
 
@@ -22,6 +25,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("listening on {}", state.socket_name.to_string_lossy());
 
     winit::init(&mut event_loop, &mut state)?;
+
+    // wayluck -c <command>: run it inside wayluck (the window manager, usually).
+    let mut args = std::env::args().skip(1);
+    if let (Some("-c"), Some(command)) = (args.next().as_deref(), args.next()) {
+        tracing::info!("running {command}");
+        std::process::Command::new("sh")
+            .args(["-c", &command])
+            .env("WAYLAND_DISPLAY", &state.socket_name)
+            .spawn()?;
+    }
 
     event_loop.run(None, &mut state, |state| {
         // Replies to clients are queued while handling; send them once per

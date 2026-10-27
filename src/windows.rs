@@ -2,14 +2,17 @@
 //! window by; a surface finds its window's id without searching (it's kept
 //! in the surface's own data).
 
-use std::{collections::HashMap, fmt};
-
-use smithay::{
-    desktop::Window, reexports::wayland_server::protocol::wl_surface::WlSurface,
-    wayland::compositor::with_states,
-};
-
 use crate::Wayluck;
+use smithay::{
+    desktop::Window,
+    reexports::wayland_server::protocol::wl_surface::WlSurface,
+    utils::{Logical, Rectangle, SERIAL_COUNTER},
+    wayland::{
+        compositor::with_states,
+        shell::xdg::{ToplevelSurface, XdgToplevelSurfaceData},
+    },
+};
+use std::{collections::HashMap, fmt};
 
 /// A window's id: stays the same for its life, never reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -49,6 +52,10 @@ impl Windows {
         self.by_id.get(&id)
     }
 
+    pub fn ids(&self) -> impl Iterator<Item = WindowId> + '_ {
+        self.by_id.keys().copied()
+    }
+
     pub fn len(&self) -> usize {
         self.by_id.len()
     }
@@ -60,14 +67,95 @@ impl Windows {
     }
 }
 
+/// A window's title and app id, as far as its client has said.
+pub type Names = (Option<String>, Option<String>);
+
+/// What a client called its window.
+pub fn names(toplevel: &ToplevelSurface) -> Names {
+    with_states(toplevel.wl_surface(), |states| {
+        let data = states
+            .data_map
+            .get::<XdgToplevelSurfaceData>()
+            .unwrap()
+            .lock()
+            .unwrap();
+        (data.title.clone(), data.app_id.clone())
+    })
+}
+
+/// One change to what's shown.
+pub enum Change {
+    /// Show a window at a rectangle, asking its client for that size.
+    Place(WindowId, Rectangle<i32, Logical>),
+    /// Stop showing a window.
+    Hide(WindowId),
+}
+
 impl Wayluck {
-    /// A client's new window: kept, and (until a window manager places
-    /// windows) shown a step down and right of the last one.
+    /// A client's new window: kept, not shown until a window manager places
+    /// it. With no window manager, shown a step down and right of the last one.
     pub fn add_window(&mut self, window: Window) -> WindowId {
         let step = 40 * self.windows.len() as i32;
         let id = self.windows.insert(window.clone());
-        self.space.map_element(window, (step, step), true);
+        if self.wm.manager.is_none() {
+            self.space.map_element(window, (step, step), true);
+        }
+        self.wm_window_added(id);
         id
+    }
+
+    /// Apply changes together: if any can't be, none are.
+    pub fn apply(&mut self, changes: Vec<Change>) -> Result<(), &'static str> {
+        // Check everything first, so nothing is half done.
+        for change in &changes {
+            let (Change::Place(id, _) | Change::Hide(id)) = change;
+            if self.windows.get(*id).is_none() {
+                return Err("a window in it is gone");
+            }
+            if let Change::Place(_, rect) = change
+                && (rect.size.w <= 0 || rect.size.h <= 0)
+            {
+                return Err("a size isn't positive");
+            }
+        }
+        for change in changes {
+            match change {
+                Change::Place(id, rect) => {
+                    let window = self.windows.get(id).unwrap().clone();
+                    let toplevel = window.toplevel().unwrap();
+                    toplevel.with_pending_state(|s| s.size = Some(rect.size));
+                    // Before its first commit a client can't be configured;
+                    // its first configure (handle_commit) carries the size.
+                    if toplevel.is_initial_configure_sent() {
+                        toplevel.send_pending_configure();
+                    }
+                    self.space.map_element(window, rect.loc, false);
+                }
+                Change::Hide(id) => {
+                    let window = self.windows.get(id).unwrap().clone();
+                    self.space.unmap_elem(&window);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Give id keyboard focus (None: no window has it), and raise it.
+    pub fn focus(&mut self, id: Option<WindowId>) {
+        let window = id.and_then(|id| self.windows.get(id)).cloned();
+        if let Some(w) = &window {
+            self.space.raise_element(w, true);
+        }
+        // Activated (drawn as focused) for the focused one only.
+        for w in self.space.elements() {
+            w.set_activated(Some(w) == window.as_ref());
+            if let Some(t) = w.toplevel() {
+                t.send_pending_configure();
+            }
+        }
+        let surface = window.and_then(|w| w.toplevel().map(|t| t.wl_surface().clone()));
+        let keyboard = self.seat.get_keyboard().unwrap();
+        keyboard.set_focus(self, surface, SERIAL_COUNTER.next_serial());
     }
 
     /// A window's client closed it, or went away.
@@ -75,5 +163,6 @@ impl Wayluck {
         if let Some(window) = self.windows.remove(id) {
             self.space.unmap_elem(&window);
         }
+        self.wm_window_closed(id);
     }
 }
