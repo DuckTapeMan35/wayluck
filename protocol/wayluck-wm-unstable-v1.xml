@@ -80,6 +80,37 @@
       <description summary="give the pointer back to clients"/>
     </request>
 
+    <request name="warp_pointer">
+      <description summary="move the pointer">
+        To x, y in global coordinates, as if the user had moved it there:
+        clients under it hear, and pointer_position follows. Nested in
+        another session, that session's cursor stays where it is.
+      </description>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+    </request>
+
+    <request name="set_keymap">
+      <description summary="the keyboard's layout, by XKB names">
+        As in setxkbmap: an empty string is XKB's default (layout "us").
+        Clients get the new keymap, and key bindings match keys as it
+        has them. A keymap XKB can't make is ignored. Wayluck and it's
+        wm run on the same machine, so wayluck compiles the keymap itself
+        and no file descriptor has to cross the protocol.
+      </description>
+      <arg name="model" type="string" summary="pc105, say"/>
+      <arg name="layout" type="string" summary="us,pt, say"/>
+      <arg name="variant" type="string" summary="for each layout: dvorak, say"/>
+      <arg name="options" type="string" summary="caps:escape, say"/>
+    </request>
+
+    <request name="set_layout">
+      <description summary="switch to one of the keymap's layouts">
+        By its place in set_keymap's layout list, from 0.
+      </description>
+      <arg name="index" type="uint"/>
+    </request>
+
     <event name="unavailable">
       <description summary="another window manager is bound">
         This manager does nothing; the client should destroy it.
@@ -177,6 +208,17 @@
 
     <event name="pointer_leave">
       <description summary="the pointer isn't over it any more"/>
+    </event>
+
+    <event name="fullscreen_request">
+      <description summary="its client asked to be fullscreen">
+        F11 in a browser, say. Nothing changes unless the window manager
+        makes it so, with a transaction's fullscreen.
+      </description>
+    </event>
+
+    <event name="unfullscreen_request">
+      <description summary="its client asked to stop being fullscreen"/>
     </event>
   </interface>
 
@@ -285,6 +327,16 @@
       </description>
       <arg name="window" type="object" interface="wayluck_wm_window_v1"/>
       <arg name="edges" type="uint" summary="the edges enum's bits"/>
+    </request>
+
+    <request name="fullscreen">
+      <description summary="tell a window whether it's fullscreen">
+        The client is told (xdg_toplevel's fullscreen state) and draws
+        for it, without its own chrome. Where it goes, and how big, is
+        still up to place. A window isn't fullscreen until it's told so.
+      </description>
+      <arg name="window" type="object" interface="wayluck_wm_window_v1"/>
+      <arg name="fullscreen" type="uint" summary="1: it is, 0: it isn't"/>
     </request>
 
     <event name="applied">

@@ -129,6 +129,8 @@ pub enum Change {
     Border(WindowId, u32, [u32; 4]),
     /// Tell a window which of its edges are tiled (the protocol's edges bits).
     Tiled(WindowId, u32),
+    /// Tell a window whether it's fullscreen.
+    Fullscreen(WindowId, bool),
 }
 
 impl Wayluck {
@@ -165,6 +167,7 @@ impl Wayluck {
                 | Change::Hide(id)
                 | Change::Focus(Some(id))
                 | Change::Border(id, _, _)
+                | Change::Fullscreen(id, _)
                 | Change::Tiled(id, _) => *id,
                 Change::Focus(None) => continue,
             };
@@ -199,6 +202,16 @@ impl Wayluck {
                 Change::Tiled(id, edges) => {
                     let toplevel = self.windows.get(id).unwrap().toplevel().unwrap();
                     toplevel.with_pending_state(|s| set_tiled(&mut s.states, edges));
+                }
+                Change::Fullscreen(id, on) => {
+                    let toplevel = self.windows.get(id).unwrap().toplevel().unwrap();
+                    toplevel.with_pending_state(|s| {
+                        if on {
+                            s.states.set(xdg_toplevel::State::Fullscreen);
+                        } else {
+                            s.states.unset(xdg_toplevel::State::Fullscreen);
+                        }
+                    });
                 }
                 Change::Focus(_) | Change::Border(..) => {}
             }
@@ -273,7 +286,7 @@ impl Wayluck {
                             .or_insert_with(|| Border::new(width, colors));
                     }
                 }
-                Change::Tiled(..) => {} // told already
+                Change::Tiled(..) | Change::Fullscreen(..) => {} // told already
             }
         }
     }

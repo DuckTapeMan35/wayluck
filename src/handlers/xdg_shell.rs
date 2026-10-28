@@ -8,7 +8,7 @@ use crate::{
 use smithay::{
     delegate_xdg_shell,
     desktop::Window,
-    reexports::wayland_server::protocol::{wl_seat, wl_surface::WlSurface},
+    reexports::wayland_server::protocol::{wl_output, wl_seat, wl_surface::WlSurface},
     utils::Serial,
     wayland::shell::xdg::{
         PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
@@ -43,6 +43,20 @@ impl XdgShellHandler for Wayluck {
         if let Some(id) = Windows::id_of(surface.wl_surface()) {
             self.wm_window_app_id(id);
         }
+    }
+
+    // Fullscreen is the window manager's to give: a client's asking goes
+    // to it, and its answer comes in a transaction.
+    fn fullscreen_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _output: Option<wl_output::WlOutput>,
+    ) {
+        fullscreen_request(self, &surface, true);
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        fullscreen_request(self, &surface, false);
     }
 
     // Popups (menus, tooltips): popups.rs.
@@ -96,6 +110,17 @@ pub fn handle_commit(state: &mut Wayluck, surface: &WlSurface) {
     }
     tracing::info!("configuring {}", title_of(toplevel));
     toplevel.send_configure();
+}
+
+/// A client asked to be fullscreen (on), or to stop. With no window manager
+/// to ask, the answer is no: a configure with its state as it was. (Not
+/// before its first configure, which waits for the window manager.)
+fn fullscreen_request(state: &mut Wayluck, surface: &ToplevelSurface, on: bool) {
+    let asked =
+        Windows::id_of(surface.wl_surface()).is_some_and(|id| state.wm_fullscreen_request(id, on));
+    if !asked && surface.is_initial_configure_sent() {
+        surface.send_configure();
+    }
 }
 
 /// A toplevel's title, or "(untitled)", for the log.

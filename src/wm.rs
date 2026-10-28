@@ -120,6 +120,21 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
                     state.wm.buttons.push(binding);
                 }
             }
+            wayluck_wm_manager_v1::Request::SetKeymap {
+                model,
+                layout,
+                variant,
+                options,
+            } => {
+                if state.wm.manager.as_ref() == Some(manager) {
+                    state.set_keymap(&model, &layout, &variant, &options);
+                }
+            }
+            wayluck_wm_manager_v1::Request::SetLayout { index } => {
+                if state.wm.manager.as_ref() == Some(manager) {
+                    state.set_layout(index);
+                }
+            }
             wayluck_wm_manager_v1::Request::GrabPointer => {
                 if state.wm.manager.as_ref() == Some(manager) {
                     state.wm.pointer_grabbed = true;
@@ -203,6 +218,9 @@ impl Dispatch<WayluckWmTransactionV1, Transaction> for Wayluck {
                 [top, right, bottom, left],
             )),
             Request::Tiled { window, edges } => Some(Change::Tiled(id_of(&window), edges)),
+            Request::Fullscreen { window, fullscreen } => {
+                Some(Change::Fullscreen(id_of(&window), fullscreen != 0))
+            }
             Request::Hide { window } => Some(Change::Hide(id_of(&window))),
             Request::Commit => None,
             Request::Focus { window } => Some(Change::Focus(window.as_ref().map(id_of))),
@@ -468,6 +486,20 @@ impl Wayluck {
         if let Some(resource) = self.wm.windows.get(&id) {
             resource.focus_request();
         }
+    }
+
+    /// A window's client asked to be fullscreen, or to stop: the window
+    /// manager hears so, and decides. false: there's none to ask.
+    pub fn wm_fullscreen_request(&self, id: WindowId, on: bool) -> bool {
+        let Some(resource) = self.wm.windows.get(&id) else {
+            return false;
+        };
+        if on {
+            resource.fullscreen_request();
+        } else {
+            resource.unfullscreen_request();
+        }
+        true
     }
 
     /// A window is gone: the window manager hears so, and should destroy it.

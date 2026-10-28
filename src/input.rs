@@ -10,7 +10,7 @@ use smithay::{
     },
     desktop::WindowSurfaceType,
     input::{
-        keyboard::{FilterResult, Keycode, KeysymHandle, ModifiersState},
+        keyboard::{FilterResult, Keycode, KeysymHandle, Layout, ModifiersState, XkbConfig},
         pointer::{AxisFrame, ButtonEvent, MotionEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
@@ -68,6 +68,29 @@ impl Wayluck {
             self.keys_to_wm.push(code);
         }
         FilterResult::Intercept(())
+    }
+
+    /// The keyboard's layout, by XKB names (empty: XKB's default). Clients
+    /// get the new keymap; one XKB can't make leaves the old one.
+    pub fn set_keymap(&mut self, model: &str, layout: &str, variant: &str, options: &str) {
+        let config = XkbConfig {
+            model,
+            layout,
+            variant,
+            options: (!options.is_empty()).then(|| options.to_string()),
+            ..XkbConfig::default()
+        };
+        let keyboard = self.seat.get_keyboard().unwrap();
+        match keyboard.set_xkb_config(self, config) {
+            Ok(()) => tracing::info!("keymap: {layout:?} {variant:?} {options:?}"),
+            Err(e) => tracing::warn!("no keymap for {layout:?} {variant:?}: {e:?}"),
+        }
+    }
+
+    /// Switch to the keymap's layout at index (from 0).
+    pub fn set_layout(&mut self, index: u32) {
+        let keyboard = self.seat.get_keyboard().unwrap();
+        keyboard.with_xkb_state(self, |mut xkb| xkb.set_layout(Layout(index)));
     }
 
     /// Lost the keyboard (nested: the host focused another window): let go of
