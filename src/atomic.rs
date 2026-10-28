@@ -4,15 +4,12 @@
 //! they're let through together, with the rest of the transaction, so one
 //! frame shows the whole new layout.
 
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::{Duration, Instant},
+use crate::{
+    Wayluck,
+    protocol::wayluck_wm_transaction_v1::WayluckWmTransactionV1,
+    state::ClientState,
+    windows::{Change, WindowId, Windows},
 };
-
 use smithay::{
     reexports::{
         calloop::{
@@ -27,12 +24,13 @@ use smithay::{
         shell::xdg::XdgToplevelSurfaceData,
     },
 };
-
-use crate::{
-    Wayluck,
-    protocol::wayluck_wm_transaction_v1::WayluckWmTransactionV1,
-    state::ClientState,
-    windows::{Change, WindowId, Windows},
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 /// How long a transaction waits for slow clients before it's shown anyway.

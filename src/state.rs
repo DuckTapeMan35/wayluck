@@ -7,6 +7,7 @@ use smithay::{
     reexports::{
         calloop::{
             EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction, generic::Generic,
+            ping::Ping,
         },
         wayland_server::{
             Display, DisplayHandle,
@@ -29,6 +30,8 @@ pub struct Wayluck {
     pub socket_name: OsString,
     pub display_handle: DisplayHandle,
     pub loop_signal: LoopSignal,
+    /// Asks the backend for a frame (queue_redraw); None until it's set up.
+    pub redraw: Option<Ping>,
     /// For timers and idle callbacks (atomic.rs).
     pub loop_handle: LoopHandle<'static, Wayluck>,
     /// When wayluck started: frame callbacks carry the time since.
@@ -81,6 +84,7 @@ impl Wayluck {
             socket_name,
             display_handle: dh,
             loop_signal: event_loop.get_signal(),
+            redraw: None,
             loop_handle: event_loop.handle(),
             compositor_state,
             popups: PopupManager::default(),
@@ -97,6 +101,14 @@ impl Wayluck {
             windows: Windows::default(),
             start_time: std::time::Instant::now(),
             space: Space::default(),
+        }
+    }
+
+    /// Something on screen changed: draw a frame. However many ask before
+    /// it's drawn, it's one.
+    pub fn queue_redraw(&self) {
+        if let Some(ping) = &self.redraw {
+            ping.ping();
         }
     }
 }

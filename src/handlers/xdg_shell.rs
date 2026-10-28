@@ -50,6 +50,11 @@ impl XdgShellHandler for Wayluck {
         Wayluck::new_popup(self, surface, positioner);
     }
 
+    // A dismissed menu goes without a last commit: the frame without it.
+    fn popup_destroyed(&mut self, _surface: PopupSurface) {
+        self.queue_redraw();
+    }
+
     fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
         self.grab_popup(surface, seat, serial);
     }

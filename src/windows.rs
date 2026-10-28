@@ -250,6 +250,7 @@ impl Wayluck {
     /// The part of a transaction that's seen: where windows are, which are
     /// hidden, focus and borders. A window closed meanwhile is skipped.
     pub fn show(&mut self, changes: Vec<Change>) {
+        self.queue_redraw();
         for change in changes {
             match change {
                 Change::Place(id, rect) => {
@@ -297,6 +298,7 @@ impl Wayluck {
     pub fn remove_window(&mut self, id: WindowId) {
         if let Some(window) = self.windows.remove(id) {
             self.space.unmap_elem(&window);
+            self.queue_redraw();
         }
         self.stop_waiting_for(id);
         self.wm_window_closed(id);

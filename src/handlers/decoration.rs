@@ -2,13 +2,12 @@
 //! compositor's, i.e. not to draw a title bar or shadows. wayluck draws none
 //! either: a desktop shell may, relative to the windows the wm lays out.
 
+use crate::Wayluck;
 use smithay::{
     delegate_xdg_decoration,
     reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
     wayland::shell::xdg::{ToplevelSurface, decoration::XdgDecorationHandler},
 };
-
-use crate::Wayluck;
 
 impl XdgDecorationHandler for Wayluck {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {

@@ -1,5 +1,6 @@
 //! wl_compositor (surfaces) and wl_shm (buffers in shared memory).
 
+use crate::{Wayluck, state::ClientState};
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     delegate_compositor, delegate_shm,
@@ -14,8 +15,6 @@ use smithay::{
     },
 };
 
-use crate::{Wayluck, state::ClientState};
-
 impl CompositorHandler for Wayluck {
     fn compositor_state(&mut self) -> &mut CompositorState {
         &mut self.compositor_state
@@ -26,9 +25,12 @@ impl CompositorHandler for Wayluck {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
-        // Keep the surface's buffer for rendering; nothing draws it yet.
+        // Keep the surface's buffer for rendering.
         on_commit_buffer_handler::<Self>(surface);
         super::handle_commit(self, surface);
+        // A new buffer, or a change to what's drawn: a frame shows it. (The
+        // damage tracker draws only what really changed.)
+        self.queue_redraw();
     }
 }
 
