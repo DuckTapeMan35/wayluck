@@ -2,17 +2,25 @@
 //! window by; a surface finds its window's id without searching (it's kept
 //! in the surface's own data).
 
-use crate::Wayluck;
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+};
+
 use smithay::{
     desktop::Window,
-    reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{Logical, Rectangle, SERIAL_COUNTER},
+    reexports::{
+        wayland_protocols::xdg::shell::server::xdg_toplevel,
+        wayland_server::protocol::wl_surface::WlSurface,
+    },
+    utils::{Logical, Rectangle, SERIAL_COUNTER, Serial},
     wayland::{
-        compositor::with_states,
-        shell::xdg::{ToplevelSurface, XdgToplevelSurfaceData},
+        compositor::{add_pre_commit_hook, with_states},
+        shell::xdg::{ToplevelStateSet, ToplevelSurface, XdgToplevelSurfaceData},
     },
 };
-use std::{collections::HashMap, fmt};
+
+use crate::{Wayluck, protocol::wayluck_wm_transaction_v1::WayluckWmTransactionV1, render::Border};
 
 /// A window's id: stays the same for its life, never reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -27,6 +35,13 @@ impl fmt::Display for WindowId {
 #[derive(Default)]
 pub struct Windows {
     by_id: HashMap<WindowId, Window>,
+    /// The borders the window manager gave windows.
+    borders: HashMap<WindowId, Border>,
+    /// Windows the window manager has placed or hidden at least once: their
+    /// first configure can carry what it decided.
+    decided: HashSet<WindowId>,
+    /// Windows that committed for the first time and wait for that.
+    waiting: HashSet<WindowId>,
     next: u64,
 }
 
@@ -45,6 +60,9 @@ impl Windows {
     }
 
     pub fn remove(&mut self, id: WindowId) -> Option<Window> {
+        self.borders.remove(&id);
+        self.decided.remove(&id);
+        self.waiting.remove(&id);
         self.by_id.remove(&id)
     }
 
@@ -52,8 +70,19 @@ impl Windows {
         self.by_id.get(&id)
     }
 
-    pub fn ids(&self) -> impl Iterator<Item = WindowId> + '_ {
-        self.by_id.keys().copied()
+    /// Has the window manager placed (or hidden) it yet?
+    pub fn decided(&self, id: WindowId) -> bool {
+        self.decided.contains(&id)
+    }
+
+    /// It committed for the first time: its first configure waits for the
+    /// window manager.
+    pub fn wait(&mut self, id: WindowId) {
+        self.waiting.insert(id);
+    }
+
+    pub fn border_mut(&mut self, id: WindowId) -> Option<&mut Border> {
+        self.borders.get_mut(&id)
     }
 
     pub fn len(&self) -> usize {
@@ -64,6 +93,10 @@ impl Windows {
     /// (subsurfaces, popups, cursors).
     pub fn id_of(surface: &WlSurface) -> Option<WindowId> {
         with_states(surface, |s| s.data_map.get::<WindowId>().copied())
+    }
+
+    pub fn ids(&self) -> impl Iterator<Item = WindowId> + '_ {
+        self.by_id.keys().copied()
     }
 }
 
@@ -91,6 +124,11 @@ pub enum Change {
     Hide(WindowId),
     /// Give a window the keyboard (None: no window has it).
     Focus(Option<WindowId>),
+    /// Draw a border around a window: its width, and its colours (0xAARRGGBB;
+    /// top, right, bottom, left).
+    Border(WindowId, u32, [u32; 4]),
+    /// Tell a window which of its edges are tiled (the protocol's edges bits).
+    Tiled(WindowId, u32),
 }
 
 impl Wayluck {
@@ -99,6 +137,12 @@ impl Wayluck {
     pub fn add_window(&mut self, window: Window) -> WindowId {
         let step = 40 * self.windows.len() as i32;
         let id = self.windows.insert(window.clone());
+        // Its redraws may be held back for a transaction (atomic.rs).
+        if let Some(toplevel) = window.toplevel() {
+            add_pre_commit_hook::<Self, _>(toplevel.wl_surface(), |state, _, surface| {
+                state.hold_back(surface)
+            });
+        }
         if self.wm.manager.is_none() {
             self.space.map_element(window, (step, step), true);
         }
@@ -106,12 +150,22 @@ impl Wayluck {
         id
     }
 
-    /// Apply changes together: if any can't be, none are.
-    pub fn apply(&mut self, changes: Vec<Change>) -> Result<(), &'static str> {
+    /// Apply changes together: if any can't be, none are. Clients are told
+    /// at once (sizes, states); what's shown changes when the windows it
+    /// resizes have redrawn for it (atomic.rs). tx hears applied then.
+    pub fn apply(
+        &mut self,
+        changes: Vec<Change>,
+        tx: Option<WayluckWmTransactionV1>,
+    ) -> Result<(), &'static str> {
         // Check everything first, so nothing is half done.
         for change in &changes {
             let id = match change {
-                Change::Place(id, _) | Change::Hide(id) | Change::Focus(Some(id)) => *id,
+                Change::Place(id, _)
+                | Change::Hide(id)
+                | Change::Focus(Some(id))
+                | Change::Border(id, _, _)
+                | Change::Tiled(id, _) => *id,
                 Change::Focus(None) => continue,
             };
             if self.windows.get(id).is_none() {
@@ -123,35 +177,110 @@ impl Wayluck {
                 return Err("a size isn't positive");
             }
         }
-        for change in changes {
-            match change {
+        // One at a time: one still waiting for its clients is shown first.
+        self.show_pending();
+
+        // What clients are told.
+        let mut resized = Vec::new();
+        for change in &changes {
+            match *change {
                 Change::Place(id, rect) => {
-                    let window = self.windows.get(id).unwrap().clone();
-                    let toplevel = window.toplevel().unwrap();
-                    toplevel.with_pending_state(|s| s.size = Some(rect.size));
-                    // Before its first commit a client can't be configured;
-                    // its first configure (handle_commit) carries the size.
-                    if toplevel.is_initial_configure_sent() {
-                        toplevel.send_pending_configure();
+                    let toplevel = self.windows.get(id).unwrap().toplevel().unwrap();
+                    let before = toplevel.with_pending_state(|s| s.size.replace(rect.size));
+                    // A window not configured yet has nothing on screen to keep.
+                    if before != Some(rect.size) && toplevel.is_initial_configure_sent() {
+                        resized.push(id);
                     }
-                    self.space.map_element(window, rect.loc, false);
+                    self.windows.decided.insert(id);
                 }
                 Change::Hide(id) => {
-                    let window = self.windows.get(id).unwrap().clone();
-                    self.space.unmap_elem(&window);
+                    self.windows.decided.insert(id);
                 }
-                Change::Focus(id) => self.focus(id),
+                Change::Tiled(id, edges) => {
+                    let toplevel = self.windows.get(id).unwrap().toplevel().unwrap();
+                    toplevel.with_pending_state(|s| set_tiled(&mut s.states, edges));
+                }
+                Change::Focus(_) | Change::Border(..) => {}
             }
+        }
+        let serials = self.send_configures();
+
+        // What's shown: now, or when the resized windows have redrawn.
+        let waiting: HashMap<_, _> = resized
+            .into_iter()
+            .filter_map(|id| serials.get(&id).map(|s| (id, *s)))
+            .collect();
+        if waiting.is_empty() {
+            self.show(changes);
+            if let Some(tx) = tx {
+                tx.applied();
+            }
+        } else {
+            self.wait_for(waiting, changes, tx);
         }
         Ok(())
     }
 
-    /// Give id keyboard focus (None: no window has it), and raise it.
+    /// What changed for each client (size, states), in one configure. A
+    /// window that hasn't committed yet gets it as its first configure,
+    /// when it does (handle_commit); one that has, and was waiting for the
+    /// window manager, gets its first one now. The serials sent, by window.
+    fn send_configures(&mut self) -> HashMap<WindowId, Serial> {
+        let mut sent = HashMap::new();
+        for (id, window) in &self.windows.by_id {
+            let Some(toplevel) = window.toplevel() else {
+                continue;
+            };
+            let serial = if toplevel.is_initial_configure_sent() {
+                toplevel.send_pending_configure()
+            } else if self.windows.waiting.contains(id) && self.windows.decided.contains(id) {
+                Some(toplevel.send_configure())
+            } else {
+                None
+            };
+            if let Some(serial) = serial {
+                sent.insert(*id, serial);
+            }
+        }
+        let decided = &self.windows.decided;
+        self.windows.waiting.retain(|id| !decided.contains(id));
+        sent
+    }
+
+    /// The part of a transaction that's seen: where windows are, which are
+    /// hidden, focus and borders. A window closed meanwhile is skipped.
+    pub fn show(&mut self, changes: Vec<Change>) {
+        for change in changes {
+            match change {
+                Change::Place(id, rect) => {
+                    if let Some(window) = self.windows.get(id).cloned() {
+                        self.space.map_element(window, rect.loc, false);
+                    }
+                }
+                Change::Hide(id) => {
+                    if let Some(window) = self.windows.get(id).cloned() {
+                        self.space.unmap_elem(&window);
+                    }
+                }
+                Change::Focus(id) => self.focus(id.filter(|id| self.windows.get(*id).is_some())),
+                Change::Border(id, width, colors) => {
+                    if self.windows.get(id).is_some() {
+                        self.windows
+                            .borders
+                            .entry(id)
+                            .and_modify(|b| b.set(width, colors))
+                            .or_insert_with(|| Border::new(width, colors));
+                    }
+                }
+                Change::Tiled(..) => {} // told already
+            }
+        }
+    }
+
+    /// Give id keyboard focus (None: no window has it). Where it stacks is
+    /// up to whoever places it.
     pub fn focus(&mut self, id: Option<WindowId>) {
         let window = id.and_then(|id| self.windows.get(id)).cloned();
-        if let Some(w) = &window {
-            self.space.raise_element(w, true);
-        }
         // Activated (drawn as focused) for the focused one only.
         for w in self.space.elements() {
             w.set_activated(Some(w) == window.as_ref());
@@ -169,6 +298,35 @@ impl Wayluck {
         if let Some(window) = self.windows.remove(id) {
             self.space.unmap_elem(&window);
         }
+        self.stop_waiting_for(id);
         self.wm_window_closed(id);
+    }
+}
+
+impl Wayluck {
+    /// No window manager to wait for any more: windows still waiting for
+    /// their first configure get it, empty (the client picks its size).
+    pub fn configure_waiting(&mut self) {
+        for id in std::mem::take(&mut self.windows.waiting) {
+            if let Some(toplevel) = self.windows.get(id).and_then(|w| w.toplevel()) {
+                toplevel.send_configure();
+            }
+        }
+    }
+}
+
+/// The protocol's edges bits as xdg_toplevel's tiled states.
+fn set_tiled(states: &mut ToplevelStateSet, edges: u32) {
+    for (bit, state) in [
+        (1, xdg_toplevel::State::TiledTop),
+        (2, xdg_toplevel::State::TiledBottom),
+        (4, xdg_toplevel::State::TiledLeft),
+        (8, xdg_toplevel::State::TiledRight),
+    ] {
+        if edges & bit != 0 {
+            states.set(state);
+        } else {
+            states.unset(state);
+        }
     }
 }

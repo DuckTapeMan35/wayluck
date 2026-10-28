@@ -1,11 +1,13 @@
 //! Everything wayluck keeps, and the socket clients connect to.
 
-use crate::{windows::Windows, wm::WmState};
+use crate::{atomic::Pending, windows::Windows, wm::WmState};
 use smithay::{
-    desktop::{Space, Window},
-    input::{Seat, SeatState},
+    desktop::{PopupManager, Space, Window},
+    input::{Seat, SeatState, keyboard::Keycode},
     reexports::{
-        calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
+        calloop::{
+            EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction, generic::Generic,
+        },
         wayland_server::{
             Display, DisplayHandle,
             backend::{ClientData, ClientId, DisconnectReason},
@@ -15,7 +17,7 @@ use smithay::{
         compositor::{CompositorClientState, CompositorState},
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
-        shell::xdg::XdgShellState,
+        shell::xdg::{XdgShellState, decoration::XdgDecorationState},
         shm::ShmState,
         socket::ListeningSocketSource,
     },
@@ -27,10 +29,19 @@ pub struct Wayluck {
     pub socket_name: OsString,
     pub display_handle: DisplayHandle,
     pub loop_signal: LoopSignal,
+    /// For timers and idle callbacks (atomic.rs).
+    pub loop_handle: LoopHandle<'static, Wayluck>,
     /// When wayluck started: frame callbacks carry the time since.
     pub start_time: std::time::Instant,
+    /// Windows' popups (menus, tooltips): shown and hit-tested with them.
+    pub popups: PopupManager,
     /// The window manager, if one is bound.
     pub wm: WmState,
+    /// Keys held whose press went to the window manager: their releases
+    /// mustn't reach a client that never saw them pressed.
+    pub keys_to_wm: Vec<Keycode>,
+    /// A transaction waiting for clients to redraw (atomic.rs).
+    pub pending: Option<Pending>,
     /// Every client window, in the order they appeared.
     pub windows: Windows,
     /// What's drawn, and where: the outputs, and the windows shown on them.
@@ -41,12 +52,13 @@ pub struct Wayluck {
     pub output_manager_state: OutputManagerState,
     pub xdg_shell_state: XdgShellState,
     pub data_device_state: DataDeviceState,
+    pub xdg_decoration_state: XdgDecorationState,
     pub seat_state: SeatState<Wayluck>,
     pub seat: Seat<Wayluck>,
 }
 
 impl Wayluck {
-    pub fn new(event_loop: &mut EventLoop<Self>, display: Display<Self>) -> Self {
+    pub fn new(event_loop: &mut EventLoop<'static, Self>, display: Display<Self>) -> Self {
         let dh = display.handle();
         let compositor_state = CompositorState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
@@ -55,6 +67,8 @@ impl Wayluck {
         let socket_name = listen(display, event_loop);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
+        // Clients leave decorations to the compositor (handlers/decoration.rs).
+        let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
         let wm = WmState::new(&dh);
@@ -67,12 +81,17 @@ impl Wayluck {
             socket_name,
             display_handle: dh,
             loop_signal: event_loop.get_signal(),
+            loop_handle: event_loop.handle(),
             compositor_state,
+            popups: PopupManager::default(),
             wm,
+            keys_to_wm: Vec::new(),
+            pending: None,
             shm_state,
             output_manager_state,
             xdg_shell_state,
             data_device_state,
+            xdg_decoration_state,
             seat_state,
             seat,
             windows: Windows::default(),

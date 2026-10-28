@@ -2,7 +2,7 @@
 //! the pointer to whatever is under it. Until a window manager decides
 //! focus, a click focuses (and raises) the window under the pointer.
 
-use crate::{Wayluck, windows::Windows};
+use crate::{Wayluck, windows::Windows, wm};
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
@@ -10,7 +10,7 @@ use smithay::{
     },
     desktop::WindowSurfaceType,
     input::{
-        keyboard::FilterResult,
+        keyboard::{FilterResult, Keycode, KeysymHandle, ModifiersState},
         pointer::{AxisFrame, ButtonEvent, MotionEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
@@ -30,15 +30,44 @@ impl Wayluck {
 
     fn on_key<I: InputBackend>(&mut self, event: I::KeyboardKeyEvent) {
         let keyboard = self.seat.get_keyboard().unwrap();
+        let (code, key_state) = (event.key_code(), event.state());
         keyboard.input::<(), _>(
             self,
-            event.key_code(),
-            event.state(),
+            code,
+            key_state,
             SERIAL_COUNTER.next_serial(),
             event.time_msec(),
-            // Every key goes to the client. Bindings will filter here.
-            |_, _, _| FilterResult::Forward,
+            |state, mods, keysym| state.filter_key(code, key_state, mods, keysym),
         );
+    }
+
+    /// A key the window manager bound goes to it, not to the client: it
+    /// hears the press, and the release goes nowhere.
+    fn filter_key(
+        &mut self,
+        code: Keycode,
+        key_state: KeyState,
+        mods: &ModifiersState,
+        keysym: KeysymHandle<'_>,
+    ) -> FilterResult<()> {
+        if key_state == KeyState::Released {
+            if let Some(i) = self.keys_to_wm.iter().position(|k| *k == code) {
+                self.keys_to_wm.swap_remove(i);
+                return FilterResult::Intercept(());
+            }
+            return FilterResult::Forward;
+        }
+        // As typed (shift+1 is !) and as on the key (1).
+        let mut syms = keysym.raw_syms();
+        syms.push(keysym.modified_sym());
+        let Some(binding) = self.wm_binding(&syms, wm::modifier_bits(mods)) else {
+            return FilterResult::Forward;
+        };
+        binding.pressed();
+        if !self.keys_to_wm.contains(&code) {
+            self.keys_to_wm.push(code);
+        }
+        FilterResult::Intercept(())
     }
 
     /// Lost the keyboard (nested: the host focused another window): let go of
@@ -67,7 +96,17 @@ impl Wayluck {
             return;
         };
         let location = event.position_transformed(area.size) + area.loc.to_f64();
-        let under = self.surface_under(location);
+        let over = self
+            .space
+            .element_under(location)
+            .and_then(|(w, _)| w.toplevel().and_then(|t| Windows::id_of(t.wl_surface())));
+        self.wm_pointer_moved(location, over);
+        // While the window manager drags something, no client has the pointer.
+        let under = if self.wm.pointer_grabbed {
+            None
+        } else {
+            self.surface_under(location)
+        };
         let pointer = self.seat.get_pointer().unwrap();
         pointer.motion(
             self,
@@ -85,14 +124,28 @@ impl Wayluck {
         let pointer = self.seat.get_pointer().unwrap();
         let serial = SERIAL_COUNTER.next_serial();
         let state = event.state();
-        if state == ButtonState::Pressed && !pointer.is_grabbed() {
+        // A button the window manager bound, or any while it drags: not
+        // the client's.
+        let mods = self.seat.get_keyboard().unwrap().modifier_state();
+        let pressed = state == ButtonState::Pressed;
+
+        if self.wm_button(event.button_code(), pressed, wm::modifier_bits(&mods))
+            || self.wm.pointer_grabbed
+        {
+            return;
+        }
+
+        if pressed && !pointer.is_grabbed() {
             let clicked = self
                 .space
                 .element_under(pointer.current_location())
                 .and_then(|(w, _)| w.toplevel().and_then(|t| Windows::id_of(t.wl_surface())));
             // The window manager decides about focus; without one, what was
-            // clicked gets it (nothing, on the background).
+            // clicked is raised and gets it (nothing, on the background).
             if self.wm.manager.is_none() {
+                if let Some(w) = clicked.and_then(|id| self.windows.get(id)).cloned() {
+                    self.space.raise_element(&w, false);
+                }
                 self.focus(clicked);
             } else if let Some(id) = clicked {
                 self.wm_focus_request(id);

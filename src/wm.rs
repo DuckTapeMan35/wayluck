@@ -5,6 +5,8 @@
 use crate::{
     Wayluck,
     protocol::{
+        wayluck_wm_button_binding_v1::{self, WayluckWmButtonBindingV1},
+        wayluck_wm_key_binding_v1::{self, WayluckWmKeyBindingV1},
         wayluck_wm_manager_v1::{self, WayluckWmManagerV1},
         wayluck_wm_output_v1::{self, WayluckWmOutputV1},
         wayluck_wm_transaction_v1::{self, WayluckWmTransactionV1},
@@ -14,11 +16,12 @@ use crate::{
 };
 use smithay::{
     desktop::{Space, Window},
+    input::keyboard::{Keysym, ModifiersState},
     output::Output,
     reexports::wayland_server::{
         Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, backend::ClientId,
     },
-    utils::Rectangle,
+    utils::{Logical, Point, Rectangle},
 };
 use std::{collections::HashMap, sync::Mutex};
 
@@ -30,6 +33,17 @@ pub struct WmState {
     pub manager: Option<WayluckWmManagerV1>,
     outputs: Vec<(Output, WayluckWmOutputV1)>,
     windows: HashMap<WindowId, WayluckWmWindowV1>,
+    /// The key combinations it has taken from clients.
+    bindings: Vec<WayluckWmKeyBindingV1>,
+    /// The pointer buttons it has taken from clients.
+    buttons: Vec<WayluckWmButtonBindingV1>,
+    /// Buttons held whose press went to it (their Linux code), and the
+    /// binding that got it: the release goes there too.
+    buttons_down: Vec<(u32, WayluckWmButtonBindingV1)>,
+    /// It's dragging something: the pointer goes to no client.
+    pub pointer_grabbed: bool,
+    /// The window it was last told the pointer is over.
+    hovered: Option<WindowId>,
 }
 
 impl WmState {
@@ -70,7 +84,7 @@ impl GlobalDispatch<WayluckWmManagerV1, ()> for Wayluck {
 
 impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
     fn request(
-        _state: &mut Self,
+        state: &mut Self,
         _client: &Client,
         manager: &WayluckWmManagerV1,
         request: wayluck_wm_manager_v1::Request,
@@ -85,6 +99,37 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
             }
             // Handled in destroyed, which also covers the client going away.
             wayluck_wm_manager_v1::Request::Destroy => {}
+            wayluck_wm_manager_v1::Request::BindKey {
+                id,
+                keysym,
+                modifiers,
+            } => {
+                let binding = data_init.init(id, KeyBinding { keysym, modifiers });
+                // An unavailable manager's bindings exist, but never match.
+                if state.wm.manager.as_ref() == Some(manager) {
+                    state.wm.bindings.push(binding);
+                }
+            }
+            wayluck_wm_manager_v1::Request::BindButton {
+                id,
+                button,
+                modifiers,
+            } => {
+                let binding = data_init.init(id, ButtonBinding { button, modifiers });
+                if state.wm.manager.as_ref() == Some(manager) {
+                    state.wm.buttons.push(binding);
+                }
+            }
+            wayluck_wm_manager_v1::Request::GrabPointer => {
+                if state.wm.manager.as_ref() == Some(manager) {
+                    state.wm.pointer_grabbed = true;
+                }
+            }
+            wayluck_wm_manager_v1::Request::UngrabPointer => {
+                if state.wm.manager.as_ref() == Some(manager) {
+                    state.wm.pointer_grabbed = false;
+                }
+            }
         }
     }
 
@@ -93,6 +138,8 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
             tracing::info!("window manager gone");
             // Its objects go with it; windows stay where they are.
             state.wm = WmState::default();
+            state.configure_waiting();
+            state.show_pending();
         }
     }
 }
@@ -143,6 +190,19 @@ impl Dispatch<WayluckWmTransactionV1, Transaction> for Wayluck {
                 let rect = Rectangle::new((x, y).into(), (width, height).into());
                 Some(Change::Place(id_of(&window), rect))
             }
+            Request::Border {
+                window,
+                width,
+                top,
+                right,
+                bottom,
+                left,
+            } => Some(Change::Border(
+                id_of(&window),
+                width,
+                [top, right, bottom, left],
+            )),
+            Request::Tiled { window, edges } => Some(Change::Tiled(id_of(&window), edges)),
             Request::Hide { window } => Some(Change::Hide(id_of(&window))),
             Request::Commit => None,
             Request::Focus { window } => Some(Change::Focus(window.as_ref().map(id_of))),
@@ -162,14 +222,14 @@ impl Dispatch<WayluckWmTransactionV1, Transaction> for Wayluck {
         pending.committed = true;
         let changes = std::mem::take(&mut pending.changes);
         drop(pending);
+        // applied comes from apply, once it's on screen.
         let result = if state.wm.manager.as_ref() == Some(&data.manager) {
-            state.apply(changes)
+            state.apply(changes, Some(transaction.clone()))
         } else {
             Err("not from the window manager")
         };
-        match result {
-            Ok(()) => transaction.applied(),
-            Err(why) => transaction.failed(why.into()),
+        if let Err(why) = result {
+            transaction.failed(why.into());
         }
     }
 }
@@ -181,8 +241,145 @@ fn id_of(window: &WayluckWmWindowV1) -> WindowId {
         .expect("window objects are made with their id")
 }
 
+/// A key combination the window manager has taken.
+pub struct KeyBinding {
+    keysym: u32,
+    /// The protocol's modifiers bits (modifier_bits).
+    modifiers: u32,
+}
+
+impl Dispatch<WayluckWmKeyBindingV1, KeyBinding> for Wayluck {
+    fn request(
+        _state: &mut Self,
+        _client: &Client,
+        _binding: &WayluckWmKeyBindingV1,
+        _request: wayluck_wm_key_binding_v1::Request,
+        _data: &KeyBinding,
+        _dh: &DisplayHandle,
+        _data_init: &mut DataInit<'_, Self>,
+    ) {
+        // Only destroy, handled below.
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        _client: ClientId,
+        binding: &WayluckWmKeyBindingV1,
+        _data: &KeyBinding,
+    ) {
+        state.wm.bindings.retain(|b| b != binding);
+    }
+}
+
+/// A pointer button combination the window manager has taken.
+pub struct ButtonBinding {
+    /// Its Linux code.
+    button: u32,
+    modifiers: u32,
+}
+
+impl Dispatch<WayluckWmButtonBindingV1, ButtonBinding> for Wayluck {
+    fn request(
+        _state: &mut Self,
+        _client: &Client,
+        _binding: &WayluckWmButtonBindingV1,
+        _request: wayluck_wm_button_binding_v1::Request,
+        _data: &ButtonBinding,
+        _dh: &DisplayHandle,
+        _data_init: &mut DataInit<'_, Self>,
+    ) {
+        // Only destroy, handled below.
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        _client: ClientId,
+        binding: &WayluckWmButtonBindingV1,
+        _data: &ButtonBinding,
+    ) {
+        state.wm.buttons.retain(|b| b != binding);
+        state.wm.buttons_down.retain(|(_, b)| b != binding);
+    }
+}
+
+/// Modifiers as the protocol numbers them (X's): Caps and Num Lock left out.
+pub fn modifier_bits(m: &ModifiersState) -> u32 {
+    use wayluck_wm_manager_v1::Modifiers;
+    [
+        (m.shift, Modifiers::Shift),
+        (m.ctrl, Modifiers::Ctrl),
+        (m.alt, Modifiers::Mod1),
+        (m.iso_level5_shift, Modifiers::Mod3),
+        (m.logo, Modifiers::Mod4),
+        (m.iso_level3_shift, Modifiers::Mod5),
+    ]
+    .into_iter()
+    .filter(|(on, _)| *on)
+    .fold(Modifiers::empty(), |all, (_, m)| all | m)
+    .bits()
+}
+
 // ---- telling the window manager what there is ----
 impl Wayluck {
+    /// The window manager's binding for a key (any of its keysyms) with
+    /// these modifiers, if it has one.
+    pub fn wm_binding(&self, syms: &[Keysym], modifiers: u32) -> Option<WayluckWmKeyBindingV1> {
+        self.wm
+            .bindings
+            .iter()
+            .find(|b| {
+                let k = b
+                    .data::<KeyBinding>()
+                    .expect("bindings are made with theirs");
+                k.modifiers == modifiers && syms.iter().any(|s| s.raw() == k.keysym)
+            })
+            .cloned()
+    }
+
+    /// A button pressed or released: true if it's one the window manager
+    /// took (then the client under the pointer mustn't see it).
+    pub fn wm_button(&mut self, button: u32, pressed: bool, modifiers: u32) -> bool {
+        if !pressed {
+            let Some(i) = self.wm.buttons_down.iter().position(|(b, _)| *b == button) else {
+                return false;
+            };
+            let (_, binding) = self.wm.buttons_down.swap_remove(i);
+            binding.released();
+            return true;
+        }
+        let found = self.wm.buttons.iter().find(|b| {
+            let d = b
+                .data::<ButtonBinding>()
+                .expect("bindings are made with theirs");
+            d.button == button && d.modifiers == modifiers
+        });
+        let Some(binding) = found.cloned() else {
+            return false;
+        };
+        binding.pressed();
+        self.wm.buttons_down.push((button, binding));
+        true
+    }
+
+    /// The pointer moved: the window manager hears where, and when it's
+    /// over another window.
+    pub fn wm_pointer_moved(&mut self, at: Point<f64, Logical>, over: Option<WindowId>) {
+        let Some(manager) = &self.wm.manager else {
+            return;
+        };
+        manager.pointer_position(at.x.floor() as i32, at.y.floor() as i32);
+        if over == self.wm.hovered {
+            return;
+        }
+        if let Some(r) = self.wm.hovered.and_then(|id| self.wm.windows.get(&id)) {
+            r.pointer_leave();
+        }
+        if let Some(r) = over.and_then(|id| self.wm.windows.get(&id)) {
+            r.pointer_enter();
+        }
+        self.wm.hovered = over;
+    }
+
     /// A window manager was just accepted: every output, every window, then ready.
     fn wm_announce_all(&mut self) {
         let outputs: Vec<Output> = self.space.outputs().cloned().collect();

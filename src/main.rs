@@ -1,7 +1,9 @@
 //! wayluck: a Wayland compositor that doesn't decide where windows go.
 
+mod atomic;
 mod handlers;
 mod input;
+mod popups;
 mod protocol;
 mod render;
 mod state;
@@ -10,7 +12,6 @@ mod winit;
 mod wm;
 
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
-
 pub use state::Wayluck;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

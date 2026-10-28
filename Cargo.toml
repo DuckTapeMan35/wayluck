@@ -10,9 +10,10 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # The window manager protocol's server side, generated from its XML at build
 # time; the same versions smithay uses.
-wayland-server = "0.31"
-wayland-backend = "0.3"
-wayland-scanner = "0.31"
+wayland-server = "0.31.14"
+wayland-backend = "0.3.17"
+wayland-scanner = "0.31.11"
+bitflags = "2.13.2"
 
 [dependencies.smithay]
 version = "0.7.0"

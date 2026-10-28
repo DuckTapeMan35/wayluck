@@ -1,5 +1,5 @@
-//! xdg-shell: clients' windows (toplevels). wayluck keeps them; it doesn't
-//! show them anywhere until something places them.
+//! xdg-shell: clients' windows (toplevels), their popups (popups.rs). wayluck keeps them;
+//! it doesn't show them anywhere until something places them.
 
 use crate::{
     Wayluck,
@@ -45,33 +45,52 @@ impl XdgShellHandler for Wayluck {
         }
     }
 
-    // Popups (menus, tooltips) come later.
-    fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {}
+    // Popups (menus, tooltips): popups.rs.
+    fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
+        Wayluck::new_popup(self, surface, positioner);
+    }
 
-    fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {}
+    fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
+        self.grab_popup(surface, seat, serial);
+    }
 
     fn reposition_request(
         &mut self,
-        _surface: PopupSurface,
-        _positioner: PositionerState,
-        _token: u32,
+        surface: PopupSurface,
+        positioner: PositionerState,
+        token: u32,
     ) {
+        self.reposition_popup(surface, positioner, token);
     }
 }
 delegate_xdg_shell!(Wayluck);
 
 /// After a commit: a toplevel's first commit is answered with its first
-/// configure (it can't draw anything before that).
+/// configure (it can't draw anything before that), once the window manager,
+/// if there is one, has placed it.
 pub fn handle_commit(state: &mut Wayluck, surface: &WlSurface) {
-    let Some(window) = Windows::id_of(surface).and_then(|id| state.windows.get(id)) else {
+    if state.popup_committed(surface) {
+        return;
+    }
+    let Some(id) = Windows::id_of(surface) else {
+        return;
+    };
+    let Some(window) = state.windows.get(id) else {
         return;
     };
     window.on_commit();
     let toplevel = window.toplevel().unwrap();
-    if !toplevel.is_initial_configure_sent() {
-        tracing::info!("configuring {}", title_of(toplevel));
-        toplevel.send_configure();
+    if toplevel.is_initial_configure_sent() {
+        return;
     }
+    // A window manager decides where it goes first, so the first configure
+    // has its size (Wayluck::apply sends it then).
+    if state.wm.manager.is_some() && !state.windows.decided(id) {
+        state.windows.wait(id);
+        return;
+    }
+    tracing::info!("configuring {}", title_of(toplevel));
+    toplevel.send_configure();
 }
 
 /// A toplevel's title, or "(untitled)", for the log.

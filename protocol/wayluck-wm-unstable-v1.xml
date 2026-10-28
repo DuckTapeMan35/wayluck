@@ -34,6 +34,52 @@
       <arg name="id" type="new_id" interface="wayluck_wm_transaction_v1"/>
     </request>
 
+    <enum name="modifiers" bitfield="true">
+      <description summary="modifier keys, as X numbers them"/>
+      <entry name="shift" value="1"/>
+      <entry name="ctrl" value="4"/>
+      <entry name="mod1" value="8" summary="alt"/>
+      <entry name="mod3" value="32"/>
+      <entry name="mod4" value="64" summary="super"/>
+      <entry name="mod5" value="128" summary="alt gr, usually"/>
+    </enum>
+
+    <request name="bind_key">
+      <description summary="take a key combination from clients">
+        While the binding exists, pressing keysym with exactly these
+        modifiers (Caps Lock and Num Lock aside) goes to the window manager
+        as pressed, and not to the focused client. A keysym matches the key
+        as typed and as it is without modifiers, so shift+1 is bound as 1.
+      </description>
+      <arg name="id" type="new_id" interface="wayluck_wm_key_binding_v1"/>
+      <arg name="keysym" type="uint"/>
+      <arg name="modifiers" type="uint" summary="the modifiers enum's bits"/>
+    </request>
+
+    <request name="bind_button">
+      <description summary="take a pointer button combination from clients">
+        Like bind_key, for a mouse button: pressing it with exactly these
+        modifiers goes to the window manager as pressed, and its release as
+        released (whatever the modifiers are by then), not to the client
+        under the pointer.
+      </description>
+      <arg name="id" type="new_id" interface="wayluck_wm_button_binding_v1"/>
+      <arg name="button" type="uint" summary="its Linux code: BTN_LEFT is 0x110"/>
+      <arg name="modifiers" type="uint" summary="the modifiers enum's bits"/>
+    </request>
+
+    <request name="grab_pointer">
+      <description summary="keep the pointer from clients">
+        For a drag the window manager does itself (moving a window, say):
+        until ungrab_pointer, no client sees the pointer move or its
+        buttons. pointer_position keeps coming.
+      </description>
+    </request>
+
+    <request name="ungrab_pointer">
+      <description summary="give the pointer back to clients"/>
+    </request>
+
     <event name="unavailable">
       <description summary="another window manager is bound">
         This manager does nothing; the client should destroy it.
@@ -55,6 +101,12 @@
 
     <event name="ready">
       <description summary="everything that existed at bind time has been sent"/>
+    </event>
+
+    <event name="pointer_position">
+      <description summary="the pointer moved here, in global coordinates"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
     </event>
   </interface>
 
@@ -118,6 +170,42 @@
         transaction's focus.
       </description>
     </event>
+
+    <event name="pointer_enter">
+      <description summary="the pointer is over it now"/>
+    </event>
+
+    <event name="pointer_leave">
+      <description summary="the pointer isn't over it any more"/>
+    </event>
+  </interface>
+
+  <interface name="wayluck_wm_key_binding_v1" version="1">
+    <description summary="a key combination the window manager has"/>
+
+    <request name="destroy" type="destructor">
+      <description summary="give it back to clients"/>
+    </request>
+
+    <event name="pressed">
+      <description summary="the user pressed it"/>
+    </event>
+  </interface>
+
+  <interface name="wayluck_wm_button_binding_v1" version="1">
+    <description summary="a pointer button combination the window manager has"/>
+
+    <request name="destroy" type="destructor">
+      <description summary="give it back to clients"/>
+    </request>
+
+    <event name="pressed">
+      <description summary="the user pressed it"/>
+    </event>
+
+    <event name="released">
+      <description summary="the user let go of the button"/>
+    </event>
   </interface>
 
   <interface name="wayluck_wm_transaction_v1" version="1">
@@ -139,6 +227,8 @@
       <description summary="show a window at a rectangle">
         Global coordinates. The client is asked to take that size; whatever
         size it commits, the window is shown at x, y.
+        Stacking: the windows a transaction places go above every other
+        window, in the order they're placed, the last on top.
       </description>
       <arg name="window" type="object" interface="wayluck_wm_window_v1"/>
       <arg name="x" type="int"/>
@@ -158,10 +248,43 @@
 
     <request name="focus">
       <description summary="give a window the keyboard">
-        With no window, no window has it. The focused window is drawn as
-        active, and raised above the others.
+        With no window, no window has it. The focused window is drawn as active;
+        where it stacks is up to place.
       </description>
       <arg name="window" type="object" interface="wayluck_wm_window_v1" allow-null="true"/>
+    </request>
+
+    <request name="border">
+      <description summary="draw a border around a window">
+        width pixels wide, outside the window's rectangle (place gives the
+        rectangle inside it); 0 draws none. Colours are 0xAARRGGBB, one
+        for each side. A window has no border until it's given one.
+      </description>
+      <arg name="window" type="object" interface="wayluck_wm_window_v1"/>
+      <arg name="width" type="uint"/>
+      <arg name="top" type="uint"/>
+      <arg name="right" type="uint"/>
+      <arg name="bottom" type="uint"/>
+      <arg name="left" type="uint"/>
+    </request>
+
+    <enum name="edges" bitfield="true">
+      <entry name="none" value="0"/>
+      <entry name="top" value="1"/>
+      <entry name="bottom" value="2"/>
+      <entry name="left" value="4"/>
+      <entry name="right" value="8"/>
+    </enum>
+
+    <request name="tiled">
+      <description summary="say which edges of a window are tiled">
+        The edges that meet other windows or the output's: the client is
+        told (xdg_toplevel's tiled states), and draws for it, e.g. without
+        shadows, and without rounding its size to whole character cells.
+        A window has none until it's given some.
+      </description>
+      <arg name="window" type="object" interface="wayluck_wm_window_v1"/>
+      <arg name="edges" type="uint" summary="the edges enum's bits"/>
     </request>
 
     <event name="applied">

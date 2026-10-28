@@ -1,10 +1,10 @@
 //! smithay's per-protocol handlers.
 
 mod compositor;
+mod decoration;
 mod xdg_shell;
 
-pub use xdg_shell::handle_commit;
-
+use crate::Wayluck;
 use smithay::{
     delegate_data_device, delegate_output, delegate_seat,
     input::{Seat, SeatHandler, SeatState, pointer::CursorImageStatus},
@@ -20,8 +20,7 @@ use smithay::{
         },
     },
 };
-
-use crate::Wayluck;
+pub use xdg_shell::handle_commit;
 
 // wl_seat: the keyboard and pointer clients get input from. Empty for now;
 // xdg-shell needs one to exist (popup grabs and moves name a seat).
