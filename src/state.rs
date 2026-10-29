@@ -190,5 +190,11 @@ pub struct ClientState {
 
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
-    fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+    /// A client that broke the protocol is cut off: say why, since all it
+    /// sees is the connection closing.
+    fn disconnected(&self, client_id: ClientId, reason: DisconnectReason) {
+        if let DisconnectReason::ProtocolError(error) = reason {
+            tracing::warn!("client {client_id:?} cut off: {error}");
+        }
+    }
 }

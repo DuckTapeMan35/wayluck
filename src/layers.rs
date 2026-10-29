@@ -102,11 +102,15 @@ impl Wayluck {
     }
 
     /// After a layer surface's commit: if it now asks for the keyboard
-    /// exclusively (a launcher, say), it gets it; if it stopped taking keys
-    /// at all, it gives the keyboard back.
+    /// exclusively (a launcher, say), or just appeared above windows and
+    /// takes keys when asked (a picker, say), it gets it; if it stopped
+    /// taking keys at all, it gives the keyboard back.
     pub fn layer_wants_keyboard(&mut self, layer: &LayerSurface) {
         let holds = self.layer_focus.as_ref() == Some(layer);
-        if exclusive(layer) && !holds {
+        let appeared = just_shown(layer)
+            && ABOVE.contains(&layer.layer())
+            && layer.can_receive_keyboard_focus();
+        if (exclusive(layer) || appeared) && !holds {
             self.layer_focus = Some(layer.clone());
             self.give_keyboard();
         } else if holds && !layer.can_receive_keyboard_focus() {
@@ -159,8 +163,24 @@ impl Wayluck {
 /// Does layer take the keyboard from windows while it's shown? Only above
 /// them: below, exclusive means what on-demand does.
 pub fn exclusive(layer: &LayerSurface) -> bool {
-    let shown = with_renderer_surface_state(layer.wl_surface(), |s| s.buffer().is_some());
     layer.cached_state().keyboard_interactivity == KeyboardInteractivity::Exclusive
         && ABOVE.contains(&layer.layer())
-        && shown == Some(true)
+        && shown(layer)
+}
+
+/// Has layer something on screen (a buffer)?
+fn shown(layer: &LayerSurface) -> bool {
+    with_renderer_surface_state(layer.wl_surface(), |s| s.buffer().is_some()) == Some(true)
+}
+
+/// Whether a layer surface was shown at its last commit, kept on it.
+type WasShown = Cell<bool>;
+
+/// Did layer just appear: shown now, but not at its last commit? (Its
+/// first buffer, or one after hiding with none.)
+fn just_shown(layer: &LayerSurface) -> bool {
+    layer.user_data().insert_if_missing(WasShown::default);
+    let was = layer.user_data().get::<WasShown>().unwrap();
+    let now = shown(layer);
+    !was.replace(now) && now
 }

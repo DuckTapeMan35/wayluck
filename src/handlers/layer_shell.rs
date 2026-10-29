@@ -15,13 +15,14 @@ use smithay::{
         compositor::with_states,
         shell::{
             wlr_layer::{
-                Layer, LayerSurface as WlrLayerSurface, LayerSurfaceData, WlrLayerShellHandler,
-                WlrLayerShellState,
+                Anchor, Layer, LayerSurface as WlrLayerSurface, LayerSurfaceCachedState,
+                LayerSurfaceData, WlrLayerShellHandler, WlrLayerShellState,
             },
             xdg::PopupSurface,
         },
     },
 };
+use std::cell::Cell;
 
 impl WlrLayerShellHandler for Wayluck {
     fn shell_state(&mut self) -> &mut WlrLayerShellState {
@@ -36,6 +37,7 @@ impl WlrLayerShellHandler for Wayluck {
         _layer: Layer,
         namespace: String,
     ) {
+        layer_reborn(surface.wl_surface());
         let output = output
             .as_ref()
             .and_then(Output::from_resource)
@@ -58,6 +60,7 @@ impl WlrLayerShellHandler for Wayluck {
     fn new_popup(&mut self, _parent: WlrLayerSurface, _popup: PopupSurface) {}
 
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
+        layer_died(surface.wl_surface());
         let found = self.space.outputs().find_map(|output| {
             let map = layer_map_for_output(output);
             let layer = map
@@ -107,4 +110,52 @@ pub fn layer_committed(state: &mut Wayluck, surface: &WlSurface) -> bool {
     }
     state.layers_changed(&output);
     true
+}
+
+// Bullshit is afoot here
+
+/// On a wl_surface whose layer surface its client destroyed. smithay resets
+/// such a surface's layer state to 0×0 and unanchored, but keeps checking
+/// it on commit (smithay#1979). That combination is a protocol error, so
+/// the next commit cuts the client off, though the protocol allows it
+/// (quickshell and gtk4-layer-shell hide a panel that way).
+#[derive(Default)]
+struct LayerGone(Cell<bool>);
+
+/// Its layer surface is gone: mark it.
+fn layer_died(surface: &WlSurface) {
+    with_states(surface, |s| {
+        s.data_map.insert_if_missing(LayerGone::default);
+        s.data_map.get::<LayerGone>().unwrap().0.set(true);
+    });
+}
+
+/// It's a layer surface again: no longer marked, and unanchored, as smithay
+/// would have it.
+fn layer_reborn(surface: &WlSurface) {
+    with_states(surface, |s| {
+        if s.data_map
+            .get::<LayerGone>()
+            .is_some_and(|g| g.0.replace(false))
+        {
+            s.cached_state
+                .get::<LayerSurfaceCachedState>()
+                .pending()
+                .anchor = Anchor::empty();
+        }
+    });
+}
+
+/// Before each commit, ahead of smithay's check: a marked surface's dead
+/// layer state is anchored to every edge, so the check passes (nothing
+/// draws it any more).
+pub fn dead_layer_commit(surface: &WlSurface) {
+    with_states(surface, |s| {
+        if s.data_map.get::<LayerGone>().is_some_and(|g| g.0.get()) {
+            s.cached_state
+                .get::<LayerSurfaceCachedState>()
+                .pending()
+                .anchor = Anchor::all();
+        }
+    });
 }

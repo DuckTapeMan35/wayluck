@@ -10,7 +10,9 @@ use smithay::{
     },
     wayland::{
         buffer::BufferHandler,
-        compositor::{CompositorClientState, CompositorHandler, CompositorState},
+        compositor::{
+            CompositorClientState, CompositorHandler, CompositorState, add_pre_commit_hook,
+        },
         shm::{ShmHandler, ShmState},
     },
 };
@@ -31,6 +33,14 @@ impl CompositorHandler for Wayluck {
         // A new buffer, or a change to what's drawn: a frame shows it. (The
         // damage tracker draws only what really changed.)
         self.queue_redraw();
+    }
+
+    fn new_surface(&mut self, surface: &WlSurface) {
+        // Before smithay's own hooks, which come with a role: see
+        // layer_shell.rs.
+        add_pre_commit_hook::<Self, _>(surface, |_, _, surface| {
+            super::layer_shell::dead_layer_commit(surface);
+        });
     }
 }
 
