@@ -1,7 +1,7 @@
 //! Running nested, as a window in another session: for development. The
 //! window is wayluck's one output.
 
-use crate::{Wayluck, render};
+use crate::{Wayluck, render, screencopy};
 use smithay::{
     backend::{
         egl::EGLDevice,
@@ -99,6 +99,7 @@ pub fn init(
                 // How old the buffer we're about to draw into is: only what
                 // changed since then is drawn again (0: unknown, all of it).
                 let age = backend.buffer_age().unwrap_or(0);
+
                 let rendered = match backend.bind() {
                     Ok((renderer, mut framebuffer)) => render::render_output(
                         state,
@@ -110,6 +111,8 @@ pub fn init(
                     ),
                     Err(e) => return tracing::warn!("binding the window: {e}"),
                 };
+
+                let changed = matches!(rendered, Ok(Some(_)));
                 match rendered {
                     // Nothing changed after all: nothing to show.
                     Ok(None) => {}
@@ -120,6 +123,8 @@ pub fn init(
                     }
                     Err(e) => tracing::warn!("rendering: {e}"),
                 }
+                // Screenshots and screen sharing waiting for this frame.
+                screencopy::capture(state, &output, backend.renderer(), changed);
                 // Clients waiting to draw again may now (no more frames are
                 // asked for: the next comes when something changes).
                 render::frame_done(state, &output);

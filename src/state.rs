@@ -1,6 +1,6 @@
 //! Everything wayluck keeps, and the socket clients connect to.
 
-use crate::{atomic::Pending, cursor::Cursor, windows::Windows, wm::WmState};
+use crate::{atomic::Pending, cursor::Cursor, screencopy, windows::Windows, wm::WmState};
 use smithay::{
     backend::allocator::dmabuf::Dmabuf,
     desktop::{LayerSurface, PopupManager, Space, Window},
@@ -48,7 +48,7 @@ pub struct Wayluck {
     pub loop_handle: LoopHandle<'static, Wayluck>,
     /// When wayluck started: frame callbacks carry the time since.
     pub start_time: std::time::Instant,
-    /// The pointer's image, where wayluck draws it (cursor.rs).
+    /// The pointer's image, where wayluck draws it.
     pub cursor: Cursor,
     /// Switches to another TTY (Ctrl+Alt+F-key); None: nested, there's none.
     pub change_vt: Option<ChangeVt>,
@@ -59,8 +59,10 @@ pub struct Wayluck {
     /// Keys held whose press went to the window manager or to wayluck itself: their releases
     /// mustn't reach a client that never saw them pressed.
     pub keys_to_wm: Vec<Keycode>,
-    /// A transaction waiting for clients to redraw (atomic.rs).
+    /// A transaction waiting for clients to redraw.
     pub pending: Option<Pending>,
+    /// Screenshots and screen-sharing frames waiting for a frame drawn
+    pub screencopies: Vec<screencopy::Copy>,
     /// A launcher or bar holding the keyboard instead of the focused window.
     pub layer_focus: Option<LayerSurface>,
     /// Every client window, in the order they appeared.
@@ -76,10 +78,10 @@ pub struct Wayluck {
     pub xdg_decoration_state: XdgDecorationState,
     pub layer_shell_state: WlrLayerShellState,
     pub dmabuf_state: DmabufState,
-    /// Explicit sync, if the GPU's driver can (udev.rs; handlers/syncobj.rs).
+    /// Explicit sync, if the GPU's driver can.
     pub syncobj_state: Option<DrmSyncobjState>,
     /// The backend's renderer, asked whether it can use a client's dmabuf
-    /// (handlers/dmabuf.rs); None until the backend is set up.
+    /// None until the backend is set up.
     pub import_dmabuf: Option<ImportDmabuf>,
     pub seat_state: SeatState<Wayluck>,
     pub seat: Seat<Wayluck>,
@@ -102,6 +104,8 @@ impl Wayluck {
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
         let wm = WmState::new(&dh);
+        // Screenshots and screen sharing.
+        Self::screencopy_global(&dh);
         // One keyboard (the default keymap; 200 ms delay, 25 repeats/s) and
         // one pointer, whatever the backend has.
         seat.add_keyboard(Default::default(), 200, 25)
@@ -120,6 +124,7 @@ impl Wayluck {
             wm,
             keys_to_wm: Vec::new(),
             pending: None,
+            screencopies: Vec::new(),
             layer_focus: None,
             shm_state,
             output_manager_state,

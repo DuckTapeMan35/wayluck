@@ -51,6 +51,7 @@ impl Wayluck {
         output.user_data().insert_if_missing(Told::default);
         let told = output.user_data().get::<Told>().unwrap();
         if told.get() != usable {
+            tracing::debug!("{}: usable area now {usable:?}", output.name());
             told.set(usable);
             self.wm_output_changed(output);
         }

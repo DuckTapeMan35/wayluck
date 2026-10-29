@@ -8,6 +8,7 @@ mod layers;
 mod popups;
 mod protocol;
 mod render;
+mod screencopy;
 mod state;
 mod udev;
 mod windows;
