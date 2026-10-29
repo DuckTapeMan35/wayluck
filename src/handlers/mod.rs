@@ -2,9 +2,12 @@
 
 mod compositor;
 mod decoration;
+mod dmabuf;
+mod layer_shell;
 mod xdg_shell;
 
 use crate::Wayluck;
+pub use layer_shell::layer_committed;
 use smithay::{
     delegate_data_device, delegate_output, delegate_seat,
     input::{Seat, SeatHandler, SeatState, pointer::CursorImageStatus},
@@ -33,7 +36,14 @@ impl SeatHandler for Wayluck {
         &mut self.seat_state
     }
 
-    fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
+    /// A client set the pointer's image (or hid it): drawn from now on,
+    /// where wayluck draws it.
+    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        self.cursor.status = image;
+        if self.cursor.drawn {
+            self.queue_redraw();
+        }
+    }
 
     /// The clipboard follows keyboard focus: only the focused client may
     /// read it (or set it).

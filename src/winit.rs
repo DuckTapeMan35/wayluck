@@ -4,12 +4,15 @@
 use crate::{Wayluck, render};
 use smithay::{
     backend::{
-        renderer::{damage::OutputDamageTracker, gles::GlesRenderer},
+        egl::EGLDevice,
+        renderer::{ImportDma, damage::OutputDamageTracker, gles::GlesRenderer},
         winit::{self, WinitEvent, WinitGraphicsBackend},
     },
+    desktop::layer_map_for_output,
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::calloop::{EventLoop, ping::make_ping},
     utils::Transform,
+    wayland::dmabuf::DmabufFeedbackBuilder,
 };
 use std::{cell::RefCell, rc::Rc};
 
@@ -61,6 +64,8 @@ pub fn init(
     // Redraws only what changed since the last frame (nothing yet but the clear).
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
 
+    dmabuf(state, &backend);
+
     // Frames are drawn when something changed (Wayluck::queue_redraw), not
     // all the time: a ping asks the window for one, however many asked.
     let (ping, asked) = make_ping()?;
@@ -84,6 +89,8 @@ pub fn init(
                 }
                 output.change_current_state(Some(mode), None, None, None);
                 output.set_preferred(mode);
+                // Bars stretch to the new size; windows get what they leave.
+                layer_map_for_output(&output).arrange();
                 state.wm_output_changed(&output);
                 state.queue_redraw();
             }
@@ -123,4 +130,41 @@ pub fn init(
             _ => {}
         })?;
     Ok(())
+}
+
+/// linux-dmabuf: the formats the renderer can import, and the importing.
+/// Version 4 tells clients which GPU wayluck renders on, if EGL can tell;
+/// version 3 otherwise.
+fn dmabuf(state: &mut Wayluck, backend: &Rc<RefCell<WinitGraphicsBackend<GlesRenderer>>>) {
+    let mut b = backend.borrow_mut();
+    let formats = b.renderer().dmabuf_formats();
+    let render_node = EGLDevice::device_for_display(b.renderer().egl_context().display())
+        .ok()
+        .and_then(|device| device.try_get_render_node().ok().flatten());
+    let feedback = render_node.and_then(|node| {
+        DmabufFeedbackBuilder::new(node.dev_id(), formats.clone())
+            .build()
+            .ok()
+    });
+    let dh = state.display_handle.clone();
+    match feedback {
+        Some(feedback) => {
+            tracing::info!("linux-dmabuf v4, on {:?}", render_node);
+            state
+                .dmabuf_state
+                .create_global_with_default_feedback::<Wayluck>(&dh, &feedback);
+        }
+        None => {
+            tracing::info!("linux-dmabuf v3 (no render node)");
+            state.dmabuf_state.create_global::<Wayluck>(&dh, formats);
+        }
+    }
+    let renderer = backend.clone();
+    state.import_dmabuf = Some(Box::new(move |dmabuf| {
+        renderer
+            .borrow_mut()
+            .renderer()
+            .import_dmabuf(dmabuf, None)
+            .is_ok()
+    }));
 }

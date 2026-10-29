@@ -2,15 +2,22 @@
 //! the pointer to whatever is under it. Until a window manager decides
 //! focus, a click focuses (and raises) the window under the pointer.
 
-use crate::{Wayluck, windows::Windows, wm};
+use crate::{
+    Wayluck,
+    layers::Side,
+    windows::{WindowId, Windows},
+    wm,
+};
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-        KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+        KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
     desktop::WindowSurfaceType,
     input::{
-        keyboard::{FilterResult, Keycode, KeysymHandle, Layout, ModifiersState, XkbConfig},
+        keyboard::{
+            FilterResult, Keycode, KeysymHandle, Layout, ModifiersState, XkbConfig, keysyms,
+        },
         pointer::{AxisFrame, ButtonEvent, MotionEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
@@ -24,6 +31,7 @@ impl Wayluck {
             InputEvent::PointerMotionAbsolute { event } => self.on_motion::<I>(event),
             InputEvent::PointerButton { event } => self.on_button::<I>(event),
             InputEvent::PointerAxis { event } => self.on_axis::<I>(event),
+            InputEvent::PointerMotion { event } => self.on_relative_motion::<I>(event),
             _ => {}
         }
     }
@@ -57,6 +65,24 @@ impl Wayluck {
             }
             return FilterResult::Forward;
         }
+
+        // wayluck's own keys come before anyone's.
+        if let Some(key) = compositor_key(mods, &keysym) {
+            self.keys_to_wm.push(code);
+            match key {
+                CompositorKey::Quit => {
+                    tracing::info!("exiting (Ctrl+Alt+Backspace)");
+                    self.loop_signal.stop();
+                }
+                CompositorKey::Vt(vt) => {
+                    if let Some(change_vt) = &self.change_vt {
+                        change_vt(vt);
+                    }
+                }
+            }
+            return FilterResult::Intercept(());
+        }
+
         // As typed (shift+1 is !) and as on the key (1).
         let mut syms = keysym.raw_syms();
         syms.push(keysym.modified_sym());
@@ -119,10 +145,35 @@ impl Wayluck {
             return;
         };
         let location = event.position_transformed(area.size) + area.loc.to_f64();
-        let over = self
+        self.move_pointer(location, event.time_msec());
+    }
+
+    /// A mouse or touchpad moved (on hardware): by so much from where the
+    /// pointer is, kept on the output.
+    fn on_relative_motion<I: InputBackend>(&mut self, event: I::PointerMotionEvent) {
+        let pointer = self.seat.get_pointer().unwrap();
+        let mut location = pointer.current_location() + event.delta();
+        if let Some(area) = self
             .space
-            .element_under(location)
-            .and_then(|(w, _)| w.toplevel().and_then(|t| Windows::id_of(t.wl_surface())));
+            .outputs()
+            .next()
+            .and_then(|o| self.space.output_geometry(o))
+        {
+            let (x0, y0) = (area.loc.x as f64, area.loc.y as f64);
+            location.x = location.x.clamp(x0, x0 + area.size.w as f64 - 1.0);
+            location.y = location.y.clamp(y0, y0 + area.size.h as f64 - 1.0);
+        }
+        self.move_pointer(location, event.time_msec());
+    }
+
+    /// The pointer is at location now, by the user's hand or a warp: clients
+    /// under it hear, and so does the window manager.
+    pub fn move_pointer(&mut self, location: Point<f64, Logical>, time: u32) {
+        // Where wayluck draws the cursor, it moved.
+        if self.cursor.drawn {
+            self.queue_redraw();
+        }
+        let over = self.window_under(location);
         self.wm_pointer_moved(location, over);
         // While the window manager drags something, no client has the pointer.
         let under = if self.wm.pointer_grabbed {
@@ -137,7 +188,7 @@ impl Wayluck {
             &MotionEvent {
                 location,
                 serial: SERIAL_COUNTER.next_serial(),
-                time: event.time_msec(),
+                time,
             },
         );
         pointer.frame(self);
@@ -158,11 +209,11 @@ impl Wayluck {
             return;
         }
 
-        if pressed && !pointer.is_grabbed() {
-            let clicked = self
-                .space
-                .element_under(pointer.current_location())
-                .and_then(|(w, _)| w.toplevel().and_then(|t| Windows::id_of(t.wl_surface())));
+        let at = pointer.current_location();
+        // A click on a bar or launcher that takes keys gives it the keyboard;
+        // otherwise, on a window, the window manager hears about it.
+        if pressed && !pointer.is_grabbed() && !self.layer_clicked(at) {
+            let clicked = self.window_under(at);
             // The window manager decides about focus; without one, what was
             // clicked is raised and gets it (nothing, on the background).
             if self.wm.manager.is_none() {
@@ -210,11 +261,50 @@ impl Wayluck {
         pointer.frame(self);
     }
 
-    /// The surface under a point, and where that surface's origin is.
+    /// The surface under a point, and where that surface's origin is: a bar
+    /// or overlay above windows, a window, or a wallpaper below them.
     fn surface_under(&self, at: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
-        let (window, origin) = self.space.element_under(at)?;
-        window
-            .surface_under(at - origin.to_f64(), WindowSurfaceType::ALL)
-            .map(|(surface, offset)| (surface, (offset + origin).to_f64()))
+        if let Some(hit) = self.layer_surface_under(Side::Above, at) {
+            return Some(hit);
+        }
+        let in_window = self.space.element_under(at).and_then(|(window, origin)| {
+            window
+                .surface_under(at - origin.to_f64(), WindowSurfaceType::ALL)
+                .map(|(surface, offset)| (surface, (offset + origin).to_f64()))
+        });
+        in_window.or_else(|| self.layer_surface_under(Side::Below, at))
     }
+
+    /// The window under a point, unless a bar or overlay above windows is.
+    fn window_under(&self, at: Point<f64, Logical>) -> Option<WindowId> {
+        if self.layer_surface_under(Side::Above, at).is_some() {
+            return None;
+        }
+        let (window, _) = self.space.element_under(at)?;
+        Windows::id_of(window.toplevel()?.wl_surface())
+    }
+}
+
+/// A key wayluck keeps for itself.
+enum CompositorKey {
+    /// Ctrl+Alt+Backspace: exit, whatever else is going on.
+    Quit,
+    /// Ctrl+Alt+F1…F12: switch to that TTY.
+    Vt(i32),
+}
+
+/// Is this press one of wayluck's own keys? XKB's default keymap already
+/// makes Ctrl+Alt+F-keys XF86Switch_VT_1 to 12.
+fn compositor_key(mods: &ModifiersState, keysym: &KeysymHandle<'_>) -> Option<CompositorKey> {
+    let sym = keysym.modified_sym().raw();
+    if (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12).contains(&sym) {
+        return Some(CompositorKey::Vt(
+            (sym - keysyms::KEY_XF86Switch_VT_1 + 1) as i32,
+        ));
+    }
+    let backspace = keysym
+        .raw_syms()
+        .iter()
+        .any(|s| s.raw() == keysyms::KEY_BackSpace);
+    (mods.ctrl && mods.alt && backspace).then_some(CompositorKey::Quit)
 }

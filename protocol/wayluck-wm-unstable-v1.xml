@@ -168,6 +168,18 @@
     <event name="removed">
       <description summary="the output is gone; destroy it"/>
     </event>
+
+    <event name="usable">
+      <description summary="the part windows may use">
+        What bars and panels (layer-shell surfaces' exclusive zones) leave
+        of the output, in global coordinates: where windows should go.
+        Sent with geometry, and again when it changes, before done.
+      </description>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </event>
   </interface>
 
   <interface name="wayluck_wm_window_v1" version="1">

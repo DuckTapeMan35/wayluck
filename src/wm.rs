@@ -15,7 +15,7 @@ use crate::{
     windows::{self, Change, WindowId},
 };
 use smithay::{
-    desktop::{Space, Window},
+    desktop::{Space, Window, layer_map_for_output},
     input::keyboard::{Keysym, ModifiersState},
     output::Output,
     reexports::wayland_server::{
@@ -118,6 +118,12 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
                 let binding = data_init.init(id, ButtonBinding { button, modifiers });
                 if state.wm.manager.as_ref() == Some(manager) {
                     state.wm.buttons.push(binding);
+                }
+            }
+            wayluck_wm_manager_v1::Request::WarpPointer { x, y } => {
+                if state.wm.manager.as_ref() == Some(manager) {
+                    let time = state.start_time.elapsed().as_millis() as u32;
+                    state.move_pointer((x as f64, y as f64).into(), time);
                 }
             }
             wayluck_wm_manager_v1::Request::SetKeymap {
@@ -510,11 +516,15 @@ impl Wayluck {
     }
 }
 
-/// An output's name and geometry, then done.
+/// An output's name, geometry and usable area, then done.
 fn send_output_state(resource: &WayluckWmOutputV1, output: &Output, space: &Space<Window>) {
     resource.name(output.name());
     if let Some(geo) = space.output_geometry(output) {
         resource.geometry(geo.loc.x, geo.loc.y, geo.size.w, geo.size.h);
+        // What bars leave windows (layers.rs), in global coordinates.
+        let mut usable = layer_map_for_output(output).non_exclusive_zone();
+        usable.loc += geo.loc;
+        resource.usable(usable.loc.x, usable.loc.y, usable.size.w, usable.size.h);
     }
     resource.done();
 }

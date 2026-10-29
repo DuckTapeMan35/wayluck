@@ -1,23 +1,24 @@
-//! Drawing a frame, whatever the backend: winit now, DRM later.
+//! Drawing a frame, whatever the backend: nested (winit) or on hardware (DRM).
 
-use std::time::Duration;
-
+use crate::{Wayluck, layers::Side, windows::Windows};
 use smithay::{
     backend::renderer::{
-        Color32F, ImportAll, Renderer, Texture,
+        Color32F, ImportAll, ImportMem, Renderer, Texture,
         damage::{Error as DamageError, OutputDamageTracker},
         element::{
             AsRenderElements, Kind,
+            memory::MemoryRenderBufferRenderElement,
             solid::{SolidColorBuffer, SolidColorRenderElement},
             surface::WaylandSurfaceRenderElement,
         },
     },
+    desktop::layer_map_for_output,
     output::Output,
     render_elements,
     utils::{Logical, Physical, Point, Rectangle, Scale},
+    wayland::shell::wlr_layer::Layer,
 };
-
-use crate::{Wayluck, windows::Windows};
+use std::time::Duration;
 
 /// The parts of an output that changed, in its pixels; None: nothing did.
 pub type Damage = Option<Vec<Rectangle<i32, Physical>>>;
@@ -27,13 +28,14 @@ pub const CLEAR: [f32; 4] = [0.1, 0.1, 0.12, 1.0];
 
 render_elements! {
     /// Anything wayluck draws: clients' surfaces, and borders.
-    pub Element<R> where R: ImportAll;
+    pub Element<R> where R: ImportAll + ImportMem;
     Surface = WaylandSurfaceRenderElement<R>,
     Border = SolidColorRenderElement,
+    Cursor = MemoryRenderBufferRenderElement<R>,
 }
 
-/// Draw output: every window shown on it, each with its border, over the
-/// clear colour. Returns what changed since the frame `age` frames ago (0:
+/// Draw output into a framebuffer (nested: the window's), over the clear
+/// colour. Returns what changed since the frame `age` frames ago (0:
 /// unknown, all of it).
 pub fn render_output<R>(
     state: &mut Wayluck,
@@ -44,17 +46,40 @@ pub fn render_output<R>(
     age: usize,
 ) -> Result<Damage, DamageError<R::Error>>
 where
-    R: Renderer + ImportAll,
-    R::TextureId: Clone + Texture + 'static,
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Clone + Texture + Send + 'static,
+{
+    // Front to back: the top window first, its border just behind it, so a
+    // window's border never covers the window above it.
+    let elements = elements(state, output, renderer);
+    let result = damage_tracker.render_output(renderer, framebuffer, age, &elements, CLEAR)?;
+    Ok(result.damage.cloned())
+}
+
+/// What output shows, front to back: the cursor (where wayluck draws it),
+/// bars and overlays, every window on it with its border, then wallpapers
+/// and what else is below windows. Each backend draws these its own way.
+pub fn elements<R>(state: &mut Wayluck, output: &Output, renderer: &mut R) -> Vec<Element<R>>
+where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Clone + Texture + Send + 'static,
 {
     let Some(area) = state.space.output_geometry(output) else {
-        return Ok(None);
+        return Vec::new();
     };
     let scale = Scale::from(output.current_scale().fractional_scale());
     // Front to back: the top window first, its border just behind it, so a
     // window's border never covers the window above it.
     let mut elements: Vec<Element<R>> = Vec::new();
+    let pointer = state.seat.get_pointer().unwrap().current_location();
+    if area.to_f64().contains(pointer) {
+        let at = pointer - area.loc.to_f64();
+        elements.extend(state.cursor.elements(renderer, at, scale));
+    }
     let shown: Vec<_> = state.space.elements().rev().cloned().collect();
+    // Bars and overlays above windows; then the windows; then what's below.
+    let above = state.layers(output, Side::Above);
+    elements.extend(layer_elements(output, renderer, scale, above));
     for window in shown {
         let Some(loc) = state.space.element_location(&window) else {
             continue;
@@ -73,8 +98,35 @@ where
             );
         }
     }
-    let result = damage_tracker.render_output(renderer, framebuffer, age, &elements, CLEAR)?;
-    Ok(result.damage.cloned())
+    let below = state.layers(output, Side::Below);
+    elements.extend(layer_elements(output, renderer, scale, below));
+    elements
+}
+
+/// The layer surfaces of `layers` on output (with their popups), front first.
+fn layer_elements<R>(
+    output: &Output,
+    renderer: &mut R,
+    scale: Scale<f64>,
+    layers: &[Layer],
+) -> Vec<Element<R>>
+where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Clone + Texture + Send + 'static,
+{
+    let map = layer_map_for_output(output);
+    let mut elements = Vec::new();
+    for &layer in layers {
+        // A layer's surfaces come back to front: the last is on top.
+        for surface in map.layers_on(layer).rev() {
+            let Some(geo) = map.layer_geometry(surface) else {
+                continue;
+            };
+            let at = geo.loc.to_physical_precise_round(scale);
+            elements.extend(surface.render_elements::<Element<R>>(renderer, at, scale, 1.0));
+        }
+    }
+    elements
 }
 
 /// After a frame is on screen: tell the clients on output, so they draw
@@ -86,6 +138,13 @@ pub fn frame_done(state: &mut Wayluck, output: &Output) {
             Some(output.clone())
         });
     }
+    let map = layer_map_for_output(output);
+    for layer in map.layers() {
+        layer.send_frame(output, now, Some(Duration::ZERO), |_, _| {
+            Some(output.clone())
+        });
+    }
+    drop(map);
     state.space.refresh();
     state.popups.cleanup();
 }

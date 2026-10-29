@@ -38,12 +38,24 @@
           buildInputs = with pkgs; [
             libxkbcommon
             wayland
+            seatd # libseat: the session
+            udev # finding the GPU
+            libdrm
+            libgbm # buffers the monitor can show (from mesa)
+            libinput
           ];
           # The libraries winit and EGL open at run time.
           postFixup = ''
             wrapProgram $out/bin/wayluck \
               --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (runtimeLibs pkgs)}
           '';
+          # A session for display managers (ly, greetd's tuigreet, …).
+          postInstall = ''
+            install -Dm644 resources/wayluck.desktop $out/share/wayland-sessions/wayluck.desktop
+            substituteInPlace $out/share/wayland-sessions/wayluck.desktop \
+              --replace-fail "Exec=wayluck" "Exec=$out/bin/wayluck"
+          '';
+          passthru.providedSessions = [ "wayluck" ];
         };
       });
       devShells = forAll (pkgs: {
@@ -60,6 +72,11 @@
           buildInputs = with pkgs; [
             libxkbcommon
             wayland
+            seatd # libseat: the session
+            udev # finding the GPU
+            libdrm
+            libgbm # buffers the monitor can show (from mesa)
+            libinput
           ];
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (runtimeLibs pkgs);
         };

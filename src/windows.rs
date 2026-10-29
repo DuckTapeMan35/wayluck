@@ -2,13 +2,12 @@
 //! window by; a surface finds its window's id without searching (it's kept
 //! in the surface's own data).
 
-use std::{
-    collections::{HashMap, HashSet},
-    fmt,
+use crate::{
+    Wayluck, layers, protocol::wayluck_wm_transaction_v1::WayluckWmTransactionV1, render::Border,
 };
-
 use smithay::{
-    desktop::Window,
+    desktop::{Space, Window},
+    output::Output,
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::protocol::wl_surface::WlSurface,
@@ -19,8 +18,10 @@ use smithay::{
         shell::xdg::{ToplevelStateSet, ToplevelSurface, XdgToplevelSurfaceData},
     },
 };
-
-use crate::{Wayluck, protocol::wayluck_wm_transaction_v1::WayluckWmTransactionV1, render::Border};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+};
 
 /// A window's id: stays the same for its life, never reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -42,6 +43,10 @@ pub struct Windows {
     decided: HashSet<WindowId>,
     /// Windows that committed for the first time and wait for that.
     waiting: HashSet<WindowId>,
+    /// The window the window manager focused last.
+    focused: Option<WindowId>,
+    /// Windows the window manager made fullscreen.
+    fullscreen: HashSet<WindowId>,
     next: u64,
 }
 
@@ -60,6 +65,10 @@ impl Windows {
     }
 
     pub fn remove(&mut self, id: WindowId) -> Option<Window> {
+        if self.focused == Some(id) {
+            self.focused = None;
+        }
+        self.fullscreen.remove(&id);
         self.borders.remove(&id);
         self.decided.remove(&id);
         self.waiting.remove(&id);
@@ -97,6 +106,14 @@ impl Windows {
 
     pub fn ids(&self) -> impl Iterator<Item = WindowId> + '_ {
         self.by_id.keys().copied()
+    }
+
+    /// Is a fullscreen window shown on output?
+    pub fn fullscreen_on(&self, space: &Space<Window>, output: &Output) -> bool {
+        self.fullscreen
+            .iter()
+            .filter_map(|id| self.by_id.get(id))
+            .any(|w| space.outputs_for_element(w).contains(output))
     }
 }
 
@@ -286,7 +303,14 @@ impl Wayluck {
                             .or_insert_with(|| Border::new(width, colors));
                     }
                 }
-                Change::Tiled(..) | Change::Fullscreen(..) => {} // told already
+                Change::Fullscreen(id, on) => {
+                    if !on {
+                        self.windows.fullscreen.remove(&id);
+                    } else if self.windows.get(id).is_some() {
+                        self.windows.fullscreen.insert(id);
+                    }
+                }
+                Change::Tiled(..) => {} // told already
             }
         }
     }
@@ -302,9 +326,34 @@ impl Wayluck {
                 t.send_pending_configure();
             }
         }
-        let surface = window.and_then(|w| w.toplevel().map(|t| t.wl_surface().clone()));
+        self.windows.focused = window.and(id);
+        // Focus moved on purpose: a bar or launcher that took the keyboard
+        // when clicked lets go (one that asks for it exclusively doesn't).
+        if self
+            .layer_focus
+            .as_ref()
+            .is_some_and(|l| !layers::exclusive(l))
+        {
+            self.layer_focus = None;
+        }
+        self.give_keyboard();
+    }
+
+    /// The keyboard to whoever should have it: a layer surface holding it, else the focused window.
+    pub fn give_keyboard(&mut self) {
+        let surface = match &self.layer_focus {
+            Some(layer) => Some(layer.wl_surface().clone()),
+            None => self
+                .windows
+                .focused
+                .and_then(|id| self.windows.get(id))
+                .and_then(|w| w.toplevel())
+                .map(|t| t.wl_surface().clone()),
+        };
         let keyboard = self.seat.get_keyboard().unwrap();
-        keyboard.set_focus(self, surface, SERIAL_COUNTER.next_serial());
+        if keyboard.current_focus() != surface {
+            keyboard.set_focus(self, surface, SERIAL_COUNTER.next_serial());
+        }
     }
 
     /// A window's client closed it, or went away.

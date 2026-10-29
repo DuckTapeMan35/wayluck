@@ -14,8 +14,19 @@ wayland-server = "0.31.14"
 wayland-backend = "0.3.17"
 wayland-scanner = "0.31.11"
 bitflags = "2.13.2"
+xcursor = "0.3.11"
 
 [dependencies.smithay]
 version = "0.7.0"
 default-features = false
-features = ["backend_winit", "wayland_frontend", "desktop"]
+features = [
+  "backend_winit",
+  "backend_drm",
+  "backend_gbm",
+  "backend_libinput",
+  "backend_session_libseat",
+  "backend_udev",
+  "renderer_multi",
+  "wayland_frontend",
+  "desktop",
+]

@@ -1,8 +1,9 @@
 //! Everything wayluck keeps, and the socket clients connect to.
 
-use crate::{atomic::Pending, windows::Windows, wm::WmState};
+use crate::{atomic::Pending, cursor::Cursor, windows::Windows, wm::WmState};
 use smithay::{
-    desktop::{PopupManager, Space, Window},
+    backend::allocator::dmabuf::Dmabuf,
+    desktop::{LayerSurface, PopupManager, Space, Window},
     input::{Seat, SeatState, keyboard::Keycode},
     reexports::{
         calloop::{
@@ -16,14 +17,24 @@ use smithay::{
     },
     wayland::{
         compositor::{CompositorClientState, CompositorState},
+        dmabuf::DmabufState,
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
-        shell::xdg::{XdgShellState, decoration::XdgDecorationState},
+        shell::{
+            wlr_layer::WlrLayerShellState,
+            xdg::{XdgShellState, decoration::XdgDecorationState},
+        },
         shm::ShmState,
         socket::ListeningSocketSource,
     },
 };
 use std::{ffi::OsString, sync::Arc};
+
+/// Switch to the TTY numbered so.
+pub type ChangeVt = Box<dyn Fn(i32)>;
+
+/// Whether the renderer can use a client's dmabuf (importing it).
+pub type ImportDmabuf = Box<dyn Fn(&Dmabuf) -> bool>;
 
 pub struct Wayluck {
     /// What WAYLAND_DISPLAY should be for clients, e.g.: wayland-1
@@ -36,15 +47,21 @@ pub struct Wayluck {
     pub loop_handle: LoopHandle<'static, Wayluck>,
     /// When wayluck started: frame callbacks carry the time since.
     pub start_time: std::time::Instant,
+    /// The pointer's image, where wayluck draws it (cursor.rs).
+    pub cursor: Cursor,
+    /// Switches to another TTY (Ctrl+Alt+F-key); None: nested, there's none.
+    pub change_vt: Option<ChangeVt>,
     /// Windows' popups (menus, tooltips): shown and hit-tested with them.
     pub popups: PopupManager,
     /// The window manager, if one is bound.
     pub wm: WmState,
-    /// Keys held whose press went to the window manager: their releases
+    /// Keys held whose press went to the window manager or to wayluck itself: their releases
     /// mustn't reach a client that never saw them pressed.
     pub keys_to_wm: Vec<Keycode>,
     /// A transaction waiting for clients to redraw (atomic.rs).
     pub pending: Option<Pending>,
+    /// A launcher or bar holding the keyboard instead of the focused window.
+    pub layer_focus: Option<LayerSurface>,
     /// Every client window, in the order they appeared.
     pub windows: Windows,
     /// What's drawn, and where: the outputs, and the windows shown on them.
@@ -56,6 +73,11 @@ pub struct Wayluck {
     pub xdg_shell_state: XdgShellState,
     pub data_device_state: DataDeviceState,
     pub xdg_decoration_state: XdgDecorationState,
+    pub layer_shell_state: WlrLayerShellState,
+    pub dmabuf_state: DmabufState,
+    /// The backend's renderer, asked whether it can use a client's dmabuf
+    /// (handlers/dmabuf.rs); None until the backend is set up.
+    pub import_dmabuf: Option<ImportDmabuf>,
     pub seat_state: SeatState<Wayluck>,
     pub seat: Seat<Wayluck>,
 }
@@ -72,6 +94,8 @@ impl Wayluck {
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         // Clients leave decorations to the compositor (handlers/decoration.rs).
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
+        // Bars, wallpapers, notifications (handlers/layer_shell.rs).
+        let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
         let wm = WmState::new(&dh);
@@ -87,15 +111,22 @@ impl Wayluck {
             redraw: None,
             loop_handle: event_loop.handle(),
             compositor_state,
+            cursor: Cursor::default(),
+            change_vt: None,
             popups: PopupManager::default(),
             wm,
             keys_to_wm: Vec::new(),
             pending: None,
+            layer_focus: None,
             shm_state,
             output_manager_state,
             xdg_shell_state,
             data_device_state,
             xdg_decoration_state,
+            layer_shell_state,
+            // Its global is made by the backend, which knows the formats.
+            dmabuf_state: DmabufState::new(),
+            import_dmabuf: None,
             seat_state,
             seat,
             windows: Windows::default(),

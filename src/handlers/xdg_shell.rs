@@ -88,7 +88,7 @@ delegate_xdg_shell!(Wayluck);
 /// configure (it can't draw anything before that), once the window manager,
 /// if there is one, has placed it.
 pub fn handle_commit(state: &mut Wayluck, surface: &WlSurface) {
-    if state.popup_committed(surface) {
+    if state.popup_committed(surface) || super::layer_committed(state, surface) {
         return;
     }
     let Some(id) = Windows::id_of(surface) else {
