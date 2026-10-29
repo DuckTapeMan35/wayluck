@@ -25,7 +25,14 @@ use std::{
 
 /// A window's id: stays the same for its life, never reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct WindowId(u64);
+pub struct WindowId(u32);
+
+/// What the window manager is told it's called (wayluck_wm_manager_v1.window).
+impl From<WindowId> for u32 {
+    fn from(id: WindowId) -> u32 {
+        id.0
+    }
+}
 
 impl fmt::Display for WindowId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -47,7 +54,7 @@ pub struct Windows {
     focused: Option<WindowId>,
     /// Windows the window manager made fullscreen.
     fullscreen: HashSet<WindowId>,
-    next: u64,
+    next: u32,
 }
 
 impl Windows {
@@ -152,7 +159,8 @@ pub enum Change {
 
 impl Wayluck {
     /// A client's new window: kept, not shown until a window manager places
-    /// it. With no window manager, shown a step down and right of the last one.
+    /// it (which hears of it at its first commit, handlers/xdg_shell.rs).
+    /// With no window manager, shown a step down and right of the last one.
     pub fn add_window(&mut self, window: Window) -> WindowId {
         let step = 40 * self.windows.len() as i32;
         let id = self.windows.insert(window.clone());
@@ -165,7 +173,6 @@ impl Wayluck {
         if self.wm.manager.is_none() {
             self.space.map_element(window, (step, step), true);
         }
-        self.wm_window_added(id);
         id
     }
 

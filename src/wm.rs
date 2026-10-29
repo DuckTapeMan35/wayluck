@@ -12,7 +12,7 @@ use crate::{
         wayluck_wm_transaction_v1::{self, WayluckWmTransactionV1},
         wayluck_wm_window_v1::{self, WayluckWmWindowV1},
     },
-    windows::{self, Change, WindowId},
+    windows::{self, Change, WindowId, Windows},
 };
 use smithay::{
     desktop::{Space, Window, layer_map_for_output},
@@ -22,10 +22,20 @@ use smithay::{
         Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, backend::ClientId,
     },
     utils::{Logical, Point, Rectangle},
+    wayland::{compositor::with_states, shell::xdg::SurfaceCachedState},
 };
-use std::{collections::HashMap, sync::Mutex};
+use std::{cell::Cell, collections::HashMap, sync::Mutex};
 
 const VERSION: u32 = 1;
+
+/// On a window's surface: its client asked to be fullscreen before its
+/// window manager knew the window.
+#[derive(Default)]
+struct EarlyFullscreen(Cell<bool>);
+
+/// On a window's surface: the size limits its window manager last heard.
+#[derive(Default)]
+struct SentHints(Cell<Option<[i32; 4]>>);
 
 /// The window manager, if one is bound, and its objects for what wayluck has.
 #[derive(Default)]
@@ -410,7 +420,15 @@ impl Wayluck {
         for output in outputs {
             self.wm_output_added(&output);
         }
-        let ids: Vec<WindowId> = self.windows.ids().collect();
+        // Windows that have committed; the rest are announced at their first commit.
+        let ids: Vec<WindowId> = self
+            .windows
+            .ids()
+            .filter(|&id| {
+                (self.windows.get(id).and_then(|w| w.toplevel()))
+                    .is_some_and(|t| t.is_initial_configure_sent())
+            })
+            .collect();
         for id in ids {
             self.wm_window_added(id);
         }
@@ -445,8 +463,13 @@ impl Wayluck {
         }
     }
 
-    /// Tell the window manager (if any) about a window, and what it's called.
+    /// Tell the window manager (if any) about a window, once, with what its
+    /// client set up so far: its names, parent, size limits, and whether it
+    /// asked to be fullscreen.
     pub fn wm_window_added(&mut self, id: WindowId) {
+        if self.wm.windows.contains_key(&id) {
+            return;
+        }
         let Some((manager, client)) = self.wm.manager_and_client() else {
             return;
         };
@@ -457,12 +480,62 @@ impl Wayluck {
         ) else {
             return;
         };
-        manager.window(&resource);
+        manager.window(&resource, id.into());
         self.wm.windows.insert(id, resource);
-        // What it's called so far (usually nothing yet: clients name their
-        // windows after making them, and those come as changes).
+
         self.wm_window_title(id);
         self.wm_window_app_id(id);
+        self.wm_window_parent(id);
+        self.wm_size_hints(id);
+        let toplevel = self.windows.get(id).and_then(|w| w.toplevel());
+        let early = toplevel.is_some_and(|t| {
+            with_states(t.wl_surface(), |s| {
+                s.data_map
+                    .get::<EarlyFullscreen>()
+                    .is_some_and(|f| f.0.get())
+            })
+        });
+        if early {
+            self.wm_fullscreen_request(id, true);
+        }
+    }
+
+    /// A window's parent changed: the window manager hears the new one
+    /// (none, if the parent isn't a window it knows).
+    pub fn wm_window_parent(&self, id: WindowId) {
+        let Some(resource) = self.wm.windows.get(&id) else {
+            return;
+        };
+        let parent = (self.windows.get(id).and_then(|w| w.toplevel()))
+            .and_then(|t| t.parent())
+            .and_then(|surface| Windows::id_of(&surface))
+            .and_then(|parent| self.wm.windows.get(&parent));
+        resource.parent(parent);
+    }
+
+    /// A window's size limits, if they changed since the window manager
+    /// last heard them.
+    pub fn wm_size_hints(&self, id: WindowId) {
+        let Some(resource) = self.wm.windows.get(&id) else {
+            return;
+        };
+        let Some(toplevel) = self.windows.get(id).and_then(|w| w.toplevel()) else {
+            return;
+        };
+        with_states(toplevel.wl_surface(), |s| {
+            let limits = *s.cached_state.get::<SurfaceCachedState>().current();
+            let hints = [
+                limits.min_size.w,
+                limits.min_size.h,
+                limits.max_size.w,
+                limits.max_size.h,
+            ];
+            s.data_map.insert_if_missing(SentHints::default);
+            let sent = &s.data_map.get::<SentHints>().unwrap().0;
+            if sent.replace(Some(hints)) != Some(hints) {
+                resource.size_hints(hints[0], hints[1], hints[2], hints[3]);
+            }
+        });
     }
 
     /// A window's title changed: the window manager hears the new one.
@@ -498,7 +571,16 @@ impl Wayluck {
     /// manager hears so, and decides. false: there's none to ask.
     pub fn wm_fullscreen_request(&self, id: WindowId, on: bool) -> bool {
         let Some(resource) = self.wm.windows.get(&id) else {
-            return false;
+            // Before its first commit: the window manager hears it with the window.
+            let toplevel = self.windows.get(id).and_then(|w| w.toplevel());
+            let (Some(toplevel), Some(_)) = (toplevel, &self.wm.manager) else {
+                return false;
+            };
+            with_states(toplevel.wl_surface(), |s| {
+                s.data_map.insert_if_missing(EarlyFullscreen::default);
+                s.data_map.get::<EarlyFullscreen>().unwrap().0.set(on);
+            });
+            return true;
         };
         if on {
             resource.fullscreen_request();

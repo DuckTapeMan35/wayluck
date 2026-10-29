@@ -45,6 +45,12 @@ impl XdgShellHandler for Wayluck {
         }
     }
 
+    fn parent_changed(&mut self, surface: ToplevelSurface) {
+        if let Some(id) = Windows::id_of(surface.wl_surface()) {
+            self.wm_window_parent(id);
+        }
+    }
+
     // Fullscreen is the window manager's to give: a client's asking goes
     // to it, and its answer comes in a transaction.
     fn fullscreen_request(
@@ -98,6 +104,8 @@ pub fn handle_commit(state: &mut Wayluck, surface: &WlSurface) {
         return;
     };
     window.on_commit();
+    // Size limits are set with a commit: the window manager hears changes.
+    state.wm_size_hints(id);
     let toplevel = window.toplevel().unwrap();
     if toplevel.is_initial_configure_sent() {
         return;
@@ -106,6 +114,9 @@ pub fn handle_commit(state: &mut Wayluck, surface: &WlSurface) {
     // has its size (Wayluck::apply sends it then).
     if state.wm.manager.is_some() && !state.windows.decided(id) {
         state.windows.wait(id);
+        // The window manager hears of it now, with everything its client
+        // set up first (names, parent, size limits).
+        state.wm_window_added(id);
         return;
     }
     tracing::info!("configuring {}", title_of(toplevel));
