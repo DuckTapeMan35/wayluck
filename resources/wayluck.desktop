@@ -1,6 +1,0 @@
-[Desktop Entry]
-Name=wayluck
-Comment=A Wayland compositor that leaves placement to a window manager
-Exec=wayluck --drm
-Type=Application
-DesktopNames=wayluck
