@@ -18,6 +18,7 @@ use smithay::{
     wayland::{
         compositor::{CompositorClientState, CompositorState},
         dmabuf::DmabufState,
+        drm_syncobj::DrmSyncobjState,
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
         shell::{
@@ -75,6 +76,8 @@ pub struct Wayluck {
     pub xdg_decoration_state: XdgDecorationState,
     pub layer_shell_state: WlrLayerShellState,
     pub dmabuf_state: DmabufState,
+    /// Explicit sync, if the GPU's driver can (udev.rs; handlers/syncobj.rs).
+    pub syncobj_state: Option<DrmSyncobjState>,
     /// The backend's renderer, asked whether it can use a client's dmabuf
     /// (handlers/dmabuf.rs); None until the backend is set up.
     pub import_dmabuf: Option<ImportDmabuf>,
@@ -126,6 +129,7 @@ impl Wayluck {
             layer_shell_state,
             // Its global is made by the backend, which knows the formats.
             dmabuf_state: DmabufState::new(),
+            syncobj_state: None,
             import_dmabuf: None,
             seat_state,
             seat,

@@ -4,6 +4,7 @@ mod compositor;
 mod decoration;
 mod dmabuf;
 mod layer_shell;
+mod syncobj;
 mod xdg_shell;
 
 use crate::Wayluck;

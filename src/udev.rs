@@ -36,7 +36,10 @@ use smithay::{
         rustix::fs::OFlags,
     },
     utils::{DeviceFd, Transform},
-    wayland::dmabuf::DmabufFeedbackBuilder,
+    wayland::{
+        dmabuf::DmabufFeedbackBuilder,
+        drm_syncobj::{DrmSyncobjState, supports_syncobj_eventfd},
+    },
 };
 
 use crate::{Wayluck, render};
@@ -86,6 +89,12 @@ pub fn init(
     )?;
     let fd = DrmDeviceFd::new(DeviceFd::from(fd));
     let (mut drm, drm_events) = DrmDevice::new(fd.clone(), true)?;
+    // Explicit sync, if the GPU's driver can wait on its timelines.
+    if supports_syncobj_eventfd(&fd) {
+        let syncobj = DrmSyncobjState::new::<Wayluck>(&state.display_handle, fd.clone());
+        state.syncobj_state = Some(syncobj);
+        tracing::info!("explicit sync (linux-drm-syncobj)");
+    }
     let gbm = GbmDevice::new(fd.clone())?;
     let mut gpus: Gpus = GpuManager::new(GbmGlesBackend::default())?;
     gpus.as_mut().add_node(node, gbm.clone())?;

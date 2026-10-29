@@ -41,6 +41,10 @@ impl CompositorHandler for Wayluck {
         add_pre_commit_hook::<Self, _>(surface, |_, _, surface| {
             super::layer_shell::dead_layer_commit(surface);
         });
+        // A new GPU buffer waits until it's drawn (syncobj.rs).
+        add_pre_commit_hook::<Self, _>(surface, |state, _, surface| {
+            super::syncobj::wait_until_drawn(state, surface);
+        });
     }
 }
 
