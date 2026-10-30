@@ -5,11 +5,16 @@
 //!
 //! Ctrl+Alt+F1…F12 switch TTYs, and Ctrl+Alt+Backspace exits (input.rs).
 
-use crate::{Wayluck, image_capture, render, screencopy};
+use crate::{
+    Wayluck,
+    image_capture::{self, DmabufTarget},
+    render, screencopy,
+};
 use smithay::{
     backend::{
         allocator::{
             Fourcc,
+            dmabuf::Dmabuf,
             gbm::{GbmAllocator, GbmBufferFlags, GbmDevice},
         },
         drm::{
@@ -20,7 +25,7 @@ use smithay::{
         input::InputEvent,
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
-            ImportDma,
+            Bind, ImportDma,
             gles::GlesRenderer,
             multigpu::{GpuManager, gbm::GbmGlesBackend},
         },
@@ -344,14 +349,19 @@ fn draw_or_wait(state: &mut Wayluck, udev: &Rc<RefCell<Udev>>) {
     }
 }
 
-/// linux-dmabuf v4 on this GPU: GPU clients render into buffers it can use.
+/// linux-dmabuf v4 on this GPU: GPU clients render into buffers it can use
+/// (and captures, into buffers it draws).
 fn dmabuf(state: &mut Wayluck, udev: &Rc<RefCell<Udev>>) -> Result<(), Box<dyn Error>> {
-    let (node, formats) = {
+    let (node, formats, render_formats) = {
         let mut u = udev.borrow_mut();
         let node = u.node;
-        let formats = u.gpus.single_renderer(&node)?.dmabuf_formats();
-        (node, formats)
+        let renderer = u.gpus.single_renderer(&node)?;
+        let formats = renderer.dmabuf_formats();
+        let render_formats = Bind::<Dmabuf>::supported_formats(&renderer).unwrap_or_default();
+        (node, formats, render_formats)
     };
+    // Captures may be dmabufs on it too.
+    state.image_capture.dmabuf = Some(DmabufTarget::new(node.dev_id(), &render_formats));
     let feedback = DmabufFeedbackBuilder::new(node.dev_id(), formats).build()?;
     let dh = state.display_handle.clone();
     state

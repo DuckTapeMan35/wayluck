@@ -1,7 +1,11 @@
 //! Running nested, as a window in another session: for development. The
 //! window is wayluck's one output.
 
-use crate::{Wayluck, image_capture, render, screencopy};
+use crate::{
+    Wayluck,
+    image_capture::{self, DmabufTarget},
+    render, screencopy,
+};
 use smithay::{
     backend::{
         egl::EGLDevice,
@@ -151,6 +155,10 @@ fn dmabuf(state: &mut Wayluck, backend: &Rc<RefCell<WinitGraphicsBackend<GlesRen
             .build()
             .ok()
     });
+    // Captures may be dmabufs on its GPU too, if it's known.
+    let render_formats = b.renderer().egl_context().dmabuf_render_formats();
+    state.image_capture.dmabuf =
+        render_node.map(|node| DmabufTarget::new(node.dev_id(), render_formats));
     let dh = state.display_handle.clone();
     match feedback {
         Some(feedback) => {

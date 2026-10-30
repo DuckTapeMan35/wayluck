@@ -11,9 +11,9 @@ use crate::{
 };
 use smithay::{
     backend::{
-        allocator::Fourcc,
+        allocator::{Buffer as _, Fourcc, dmabuf::Dmabuf},
         renderer::{
-            ExportMem, ImportAll, ImportMem, Offscreen, Renderer, Texture,
+            Bind, ExportMem, ImportAll, ImportMem, Offscreen, Renderer, Texture,
             damage::OutputDamageTracker, gles::GlesRenderbuffer,
         },
     },
@@ -30,7 +30,10 @@ use smithay::{
         },
     },
     utils::{Buffer, Clock, Monotonic, Physical, Rectangle, Size, Transform},
-    wayland::shm::{with_buffer_contents, with_buffer_contents_mut},
+    wayland::{
+        dmabuf::get_dmabuf,
+        shm::{with_buffer_contents, with_buffer_contents_mut},
+    },
 };
 use std::{
     sync::Mutex,
@@ -201,9 +204,14 @@ fn region_of(
     region.intersection(all).filter(|r| !r.is_empty())
 }
 
-/// Is buffer the one a frame of size asked for: shared memory, XRGB8888,
-/// that size, rows of 4 bytes a pixel?
+/// Is buffer the one a frame of size asked for: XRGB8888, that size, and in
+/// shared memory, rows of 4 bytes a pixel (or a dmabuf: image_capture.rs
+/// offers them)?
 pub fn fits(buffer: &WlBuffer, size: Size<i32, Physical>) -> bool {
+    if let Ok(dmabuf) = get_dmabuf(buffer) {
+        let s = dmabuf.size();
+        return dmabuf.format().code == Fourcc::Xrgb8888 && s.w == size.w && s.h == size.h;
+    }
     with_buffer_contents(buffer, |_, _, b| {
         b.format == wl_shm::Format::Xrgb8888
             && b.width == size.w
@@ -217,7 +225,7 @@ pub fn fits(buffer: &WlBuffer, size: Size<i32, Physical>) -> bool {
 /// it for the clients waiting on it.
 pub fn capture<R>(state: &mut Wayluck, output: &Output, renderer: &mut R, changed: bool)
 where
-    R: Renderer + ImportAll + ImportMem + Offscreen<GlesRenderbuffer> + ExportMem,
+    R: Renderer + ImportAll + ImportMem + Offscreen<GlesRenderbuffer> + ExportMem + Bind<Dmabuf>,
     R::TextureId: Clone + Texture + Send + 'static,
     R::Error: 'static,
 {
@@ -269,7 +277,7 @@ where
 /// copy_with_damage, only once something in it changed since its last.
 pub fn capture_virtual<R>(state: &mut Wayluck, renderer: &mut R)
 where
-    R: Renderer + ImportAll + ImportMem + Offscreen<GlesRenderbuffer> + ExportMem,
+    R: Renderer + ImportAll + ImportMem + Offscreen<GlesRenderbuffer> + ExportMem + Bind<Dmabuf>,
     R::TextureId: Clone + Texture + Send + 'static,
     R::Error: 'static,
 {
@@ -378,22 +386,29 @@ pub fn copy_into<R>(
     buffer: &WlBuffer,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
-    R: Renderer + ImportAll + ImportMem + Offscreen<GlesRenderbuffer> + ExportMem,
+    R: Renderer + ImportAll + ImportMem + Offscreen<GlesRenderbuffer> + ExportMem + Bind<Dmabuf>,
     R::TextureId: Clone + Texture + Send + 'static,
     R::Error: 'static,
 {
+    if let Ok(dmabuf) = get_dmabuf(buffer) {
+        return draw_into(renderer, size, scale, elements, region, dmabuf.clone());
+    }
+
     let mut target: GlesRenderbuffer = renderer.create_buffer(
         Fourcc::Xrgb8888,
         size.to_logical(1).to_buffer(1, Transform::Normal),
     )?;
+
     let mut framebuffer = renderer.bind(&mut target)?;
     // Upright, whatever the output's transform: what a screenshot shows.
     let mut tracker = OutputDamageTracker::new(size, scale, Transform::Normal);
     tracker.render_output(renderer, &mut framebuffer, 0, elements, render::CLEAR)?;
+
     let at: Rectangle<i32, Buffer> = Rectangle::new(
         (region.loc.x, region.loc.y).into(),
         (region.size.w, region.size.h).into(),
     );
+
     let mapping = renderer.copy_framebuffer(&framebuffer, at, Fourcc::Xrgb8888)?;
     let pixels = renderer.map_texture(&mapping)?;
     let row = region.size.w as usize * 4;
@@ -409,5 +424,34 @@ where
             }
         }
     })?;
+    Ok(())
+}
+
+/// Draw elements into a client's dmabuf, on the GPU: nothing is copied.
+/// Only whole frames (region all of size): a region's buffer is only ever
+/// asked for in shared memory.
+fn draw_into<R>(
+    renderer: &mut R,
+    size: Size<i32, Physical>,
+    scale: f64,
+    elements: &[&Element<R>],
+    region: Rectangle<i32, Physical>,
+    mut dmabuf: Dmabuf,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    R: Renderer + ImportAll + ImportMem + Bind<Dmabuf>,
+    R::TextureId: Clone + Texture + Send + 'static,
+    R::Error: 'static,
+{
+    if region != Rectangle::from_size(size) {
+        return Err("only whole frames are drawn into dmabufs".into());
+    }
+    let mut framebuffer = renderer.bind(&mut dmabuf)?;
+    // Upright, whatever the output's transform: as in shared memory.
+    let mut tracker = OutputDamageTracker::new(size, scale, Transform::Normal);
+    let drawn = tracker.render_output(renderer, &mut framebuffer, 0, elements, render::CLEAR)?;
+    // The client reads it as soon as it hears it's ready: the GPU has to
+    // be done drawing by then.
+    drawn.sync.wait()?;
     Ok(())
 }

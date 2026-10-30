@@ -1,24 +1,22 @@
 //! ext-image-capture-source and ext-image-copy-capture: the standard way to
 //! capture an output or a single window (screen sharing a window, through
 //! xdg-desktop-portal-wlr). smithay doesn't have them; this does, into
-//! shared memory.
+//! shared memory or into dmabufs, on the GPU.
 //!
-//! A source is an output or a window (by its handle from the window list,
-//! toplevel_list.rs). A session on a source says what buffer to give it:
-//! XRGB8888 at the source's size, and again if that changes (a frame made
-//! for the old size fails, so the client makes a new buffer). A session's
-//! first frame is copied at once; each later one once something in the
-//! source changed (the session's own damage tracker says what). A window
-//! being captured keeps drawing even off screen: it gets frame callbacks
-//! while it has a session. Cursor sessions aren't offered yet: they stop
-//! at once (paint_cursors draws the cursor into frames instead).
-
+//! XRGB8888 at the source's size, in shared memory or a dmabuf on wayluck's
+//! GPU (if the backend says which: DmabufTarget), and again if that changes
+//! (a frame made for the old size fails, so the client makes a new buffer).
+//! A session's first frame is copied at once; each later one once something in the
+//!
 use std::{collections::HashMap, sync::Mutex, time::Duration};
 
 use smithay::{
-    backend::renderer::{
-        ExportMem, ImportAll, ImportMem, Offscreen, Renderer, Texture, damage::OutputDamageTracker,
-        element::AsRenderElements, gles::GlesRenderbuffer,
+    backend::{
+        allocator::{Fourcc, Modifier, dmabuf::Dmabuf, format::FormatSet},
+        renderer::{
+            Bind, ExportMem, ImportAll, ImportMem, Offscreen, Renderer, Texture,
+            damage::OutputDamageTracker, element::AsRenderElements, gles::GlesRenderbuffer,
+        },
     },
     output::Output,
     reexports::{
@@ -90,11 +88,32 @@ pub struct Stopped;
 
 #[derive(Default)]
 pub struct ImageCapture {
+    /// Where frames may be dmabufs; None: only shared memory (the backend
+    /// sets it, if it knows its GPU).
+    pub dmabuf: Option<DmabufTarget>,
     sessions: Vec<Session>,
     /// Frames waiting to be copied.
     frames: Vec<Waiting>,
     /// Captured windows' frame callbacks, by window.
     pacers: HashMap<WindowId, RegistrationToken>,
+}
+
+/// The GPU wayluck draws with, and the modifiers it can draw XRGB8888
+/// dmabufs with: what a client allocates a frame's dmabuf on.
+pub struct DmabufTarget {
+    pub device: u64,
+    pub modifiers: Vec<Modifier>,
+}
+
+impl DmabufTarget {
+    /// From the renderer's formats: the XRGB8888 ones' modifiers.
+    pub fn new(device: u64, formats: &FormatSet) -> Self {
+        let modifiers = (formats.iter())
+            .filter(|f| f.code == Fourcc::Xrgb8888)
+            .map(|f| f.modifier)
+            .collect();
+        DmabufTarget { device, modifiers }
+    }
 }
 
 struct Session {
@@ -138,13 +157,6 @@ impl Wayluck {
             Source::Gone => return None,
         };
         (size.w > 0 && size.h > 0).then_some(size)
-    }
-
-    /// Tell a session's client what buffer to give it.
-    fn send_constraints(session: &ExtImageCopyCaptureSessionV1, size: Size<i32, Physical>) {
-        session.buffer_size(size.w as u32, size.h as u32);
-        session.shm_format(wl_shm::Format::Xrgb8888);
-        session.done();
     }
 
     /// The sessions on a source end (it's gone): their clients hear, and
@@ -230,11 +242,30 @@ impl Wayluck {
     }
 }
 
+/// Tell a session's client what buffer to give it: shared memory, or a
+/// dmabuf on wayluck's GPU (if dmabuf says which).
+fn send_constraints(
+    session: &ExtImageCopyCaptureSessionV1,
+    size: Size<i32, Physical>,
+    dmabuf: Option<&DmabufTarget>,
+) {
+    session.buffer_size(size.w as u32, size.h as u32);
+    session.shm_format(wl_shm::Format::Xrgb8888);
+    if let Some(target) = dmabuf.filter(|t| !t.modifiers.is_empty()) {
+        session.dmabuf_device(target.device.to_ne_bytes().to_vec());
+        let modifiers = (target.modifiers.iter())
+            .flat_map(|m| u64::from(*m).to_ne_bytes())
+            .collect();
+        session.dmabuf_format(Fourcc::Xrgb8888 as u32, modifiers);
+    }
+    session.done();
+}
+
 /// After a frame was drawn: copy the frames that are due. A session's
 /// first, at once; a later one if its source changed since.
 pub fn capture_frames<R>(state: &mut Wayluck, renderer: &mut R)
 where
-    R: Renderer + ImportAll + ImportMem + Offscreen<GlesRenderbuffer> + ExportMem,
+    R: Renderer + ImportAll + ImportMem + Offscreen<GlesRenderbuffer> + ExportMem + Bind<Dmabuf>,
     R::TextureId: Clone + Texture + Send + 'static,
     R::Error: 'static,
 {
@@ -259,7 +290,7 @@ where
             session.size = size;
             session.damage = OutputDamageTracker::new(size, 1.0, Transform::Normal);
             session.copied = false;
-            Wayluck::send_constraints(&session.resource, size);
+            send_constraints(&session.resource, size, state.image_capture.dmabuf.as_ref());
             w.frame.failed(FailureReason::BufferConstraints);
             continue;
         }
@@ -472,7 +503,7 @@ impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for Wayluck {
                     session.stopped();
                     return;
                 };
-                Wayluck::send_constraints(&session, size);
+                send_constraints(&session, size, state.image_capture.dmabuf.as_ref());
                 if let Source::Window(id) = source {
                     state.start_window_pacing(id);
                 }
