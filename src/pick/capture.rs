@@ -64,6 +64,8 @@ pub enum Source {
     Monitor(String),
     /// A window, by its ext-foreign-toplevel-list identifier.
     Window(u32),
+    /// A workspace, by its id from wayluck.
+    Workspace(u32),
 }
 
 pub struct Captures {
@@ -181,6 +183,7 @@ impl Captures {
                         .zip(window_sources.as_ref())
                         .map(|((handle, _), manager)| manager.create_source(handle, &qh, ()))
                 }
+                Source::Workspace(id) => Some(picker.workspace_source(*id, &qh, ())),
             };
             if let Some(source) = source {
                 let (w, h) = fit;

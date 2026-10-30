@@ -41,7 +41,7 @@ const MAX_HEIGHT: i32 = 560;
 const PADDING: i32 = 12;
 const HEADING: i32 = 44;
 const ROW: i32 = 96;
-/// How far in a row under another goes (a window under its monitor).
+/// How far in a row under another goes, each level.
 const INDENT: i32 = 24;
 /// The box a thumbnail fits in, keeping its shape: 16:9.
 const THUMBNAIL: (i32, i32) = (128, 72);
@@ -66,12 +66,14 @@ const KEY_UP: u32 = 103 + 8;
 const KEY_DOWN: u32 = 108 + 8;
 const BTN_LEFT: u32 = 0x110;
 
-/// One choice, as the user sees it.
+/// One row, as the user sees it.
 #[derive(Clone)]
 pub struct Row {
     pub label: String,
-    /// Under the row before it (a window under its monitor).
-    pub indented: bool,
+    /// How far in it is: under a monitor 1, under a workspace 2.
+    pub depth: u8,
+    /// Can it be chosen? (A heading can't.)
+    pub choosable: bool,
 }
 
 struct Picker {
@@ -199,13 +201,21 @@ impl Picker {
     }
 
     fn key(&mut self, key: u32) {
-        let last = self.rows.len() - 1;
+        let at = self.selected;
+        // The nearest row that can be chosen, that way.
         let row = match key {
             KEY_ESC => return self.answer = Some(None),
             KEY_ENTER | KEY_KP_ENTER => return self.answer = Some(Some(self.selected)),
-            KEY_UP => self.selected.saturating_sub(1),
-            KEY_DOWN => (self.selected + 1).min(last),
+            KEY_UP => (0..at).rev().find(|r| self.rows[*r].choosable),
+            KEY_DOWN => (at + 1..self.rows.len()).find(|r| self.rows[*r].choosable),
             _ => return,
+        };
+        let Some(row) = row else {
+            // None further up: still show the headings above.
+            if key == KEY_UP {
+                self.scroll_to(0);
+            }
+            return;
         };
         self.select(row);
         self.reveal(row);
@@ -250,7 +260,7 @@ impl Picker {
         self.height - HEADING - PADDING
     }
 
-    /// The row under the pointer, if any.
+    /// The row under the pointer, if any. (and it can be chosen)
     fn hovered(&self) -> Option<usize> {
         let at = self.pointer?;
         let in_list = at.y >= HEADING as f64 && at.y < (HEADING + self.list_height()) as f64;
@@ -258,7 +268,7 @@ impl Picker {
             return None;
         }
         let row = ((at.y - HEADING as f64 + self.scroll as f64) / ROW as f64) as usize;
-        (row < self.rows.len()).then_some(row)
+        (self.rows.get(row)?.choosable).then_some(row)
     }
 
     fn size(&self) -> Size<i32, Physical> {
@@ -357,10 +367,10 @@ impl Picker {
                     );
                     frame.draw_solid(at, &whole, SELECTED)?;
                 }
-                // The thumbnail at the left (further in if indented), in
-                // the middle of the row; the label after it, cut off at the
-                // window's edge.
-                let left = PADDING + if rows[row].indented { INDENT } else { 0 };
+                // The thumbnail at the left (further in the deeper the
+                // row), in the middle of the row; the label after it, cut
+                // off at the window's edge.
+                let left = PADDING + INDENT * rows[row].depth as i32;
                 let (w, h) = THUMBNAIL;
                 let slot = Rectangle::new(
                     (px(left), px(top + (ROW - h) / 2)).into(),

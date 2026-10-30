@@ -15,7 +15,18 @@ pub struct Monitor {
     /// What the portal is told: the wl_output's name.
     pub name: String,
     description: String,
-    /// The windows it shows, topmost first.
+    /// The windows it shows, topmost first, when its window manager
+    /// offers no workspaces.
+    pub windows: Vec<Window>,
+    /// The workspaces on it its window manager offers.
+    pub workspaces: Vec<Workspace>,
+}
+
+pub struct Workspace {
+    /// To capture it by.
+    pub id: u32,
+    pub name: String,
+    /// Its windows, topmost first.
     pub windows: Vec<Window>,
 }
 
@@ -56,7 +67,8 @@ struct Asking {
     done: bool,
 }
 
-/// The monitors the user can share, in wayluck's order, with their windows.
+/// The monitors the user can share, in wayluck's order, with their
+/// workspaces and windows.
 pub fn shareable() -> Result<Vec<Monitor>, Box<dyn std::error::Error>> {
     let connection = Connection::connect_to_env()?;
     let (globals, mut queue) = registry_queue_init::<Asking>(&connection)?;
@@ -113,12 +125,25 @@ impl Dispatch<WayluckPickV1, ()> for Asking {
                     name,
                     description,
                     windows: Vec::new(),
+                    workspaces: Vec::new(),
                 })
             }
             // The last monitor's.
-            wayluck_pick_v1::Event::Window { id, title, app_id } => {
+            wayluck_pick_v1::Event::Workspace { id, name } => {
                 if let Some(monitor) = asking.monitors.last_mut() {
-                    monitor.windows.push(Window { id, title, app_id });
+                    let windows = Vec::new();
+                    monitor.workspaces.push(Workspace { id, name, windows });
+                }
+            }
+            // The last workspace's, or the last monitor's if it has none.
+            wayluck_pick_v1::Event::Window { id, title, app_id } => {
+                let Some(monitor) = asking.monitors.last_mut() else {
+                    return;
+                };
+                let window = Window { id, title, app_id };
+                match monitor.workspaces.last_mut() {
+                    Some(workspace) => workspace.windows.push(window),
+                    None => monitor.windows.push(window),
                 }
             }
         }

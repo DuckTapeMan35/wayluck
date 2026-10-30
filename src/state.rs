@@ -4,6 +4,7 @@ use crate::{
     atomic::Pending,
     cursor::Cursor,
     image_capture::ImageCapture,
+    picker::Picking,
     scenes::{SceneId, Scenes},
     screencopy,
     toplevel_list::ToplevelList,
@@ -79,8 +80,10 @@ pub struct Wayluck {
     pub screencopies: Vec<screencopy::Copy>,
     /// Captures of outputs and windows, the standard way.
     pub image_capture: ImageCapture,
-    /// Every window, for clients that list them (toplevel_list.rs).
+    /// Every window, for clients that list them.
     pub toplevel_list: ToplevelList,
+    /// Pickers asking what can be shared, and what the window manager offers them
+    pub picking: Picking,
     /// Outputs being captured, and when a frame of each was last asked for.
     pub captures: Vec<(Output, std::time::Instant)>,
     /// A launcher or bar holding the keyboard instead of the focused window.
@@ -171,6 +174,7 @@ impl Wayluck {
             screencopies: Vec::new(),
             image_capture: ImageCapture::default(),
             toplevel_list: ToplevelList::default(),
+            picking: Picking::default(),
             captures: Vec::new(),
             layer_focus: None,
             shm_state,

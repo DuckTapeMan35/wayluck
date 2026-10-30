@@ -26,11 +26,26 @@ pub fn run() -> i32 {
     }
 }
 
-/// One thing the user can choose: how it's shown, and what's printed.
+/// One row of the picker: how it's shown, what its thumbnail shows, and
+/// what's printed if it's chosen (None: it can't be, yet).
 struct Choice {
     row: window::Row,
     source: capture::Source,
-    answer: String,
+    answer: Option<String>,
+}
+
+impl Choice {
+    fn window(w: &ask::Window, depth: u8) -> Self {
+        Choice {
+            row: window::Row {
+                label: w.label(),
+                depth,
+                choosable: true,
+            },
+            source: capture::Source::Window(w.id),
+            answer: Some(format!("Window: {}", w.id)),
+        }
+    }
 }
 
 fn pick() -> Result<Option<String>, Box<dyn std::error::Error>> {
@@ -38,31 +53,36 @@ fn pick() -> Result<Option<String>, Box<dyn std::error::Error>> {
     if monitors.is_empty() {
         return Err("nothing to share".into());
     }
-    // Each monitor, and under it its windows.
+    // Each monitor, and under it its workspaces with their windows (or
+    // with none, its windows).
     let mut choices = Vec::new();
     for monitor in &monitors {
         choices.push(Choice {
             row: window::Row {
                 label: monitor.label(),
-                indented: false,
+                depth: 0,
+                choosable: true,
             },
             source: capture::Source::Monitor(monitor.name.clone()),
-            answer: format!("Monitor: {}", monitor.name),
+            answer: Some(format!("Monitor: {}", monitor.name)),
         });
-        for w in &monitor.windows {
+        choices.extend(monitor.windows.iter().map(|w| Choice::window(w, 1)));
+        for workspace in &monitor.workspaces {
             choices.push(Choice {
                 row: window::Row {
-                    label: w.label(),
-                    indented: true,
+                    label: workspace.name.clone(),
+                    depth: 1,
+                    choosable: false,
                 },
-                source: capture::Source::Window(w.id),
-                answer: format!("Window: {}", w.id),
+                source: capture::Source::Workspace(workspace.id),
+                answer: None,
             });
+            choices.extend(workspace.windows.iter().map(|w| Choice::window(w, 2)));
         }
     }
     let sources: Vec<_> = choices.iter().map(|c| c.source.clone()).collect();
     let (captures, queue) = capture::Captures::start(&sources, window::THUMBNAIL_FRAMES)?;
     let rows = choices.iter().map(|c| c.row.clone()).collect();
     let chosen = window::choose(rows, captures, queue)?;
-    Ok(chosen.map(|at| choices[at].answer.clone()))
+    Ok(chosen.and_then(|at| choices[at].answer.clone()))
 }

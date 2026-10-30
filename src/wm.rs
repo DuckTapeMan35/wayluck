@@ -3,7 +3,7 @@
 //! whoever binds while one is bound gets `unavailable`.
 
 use crate::{
-    Wayluck,
+    Wayluck, image_capture,
     protocol::{
         wayluck_wm_button_binding_v1::{self, WayluckWmButtonBindingV1},
         wayluck_wm_key_binding_v1::{self, WayluckWmKeyBindingV1},
@@ -140,6 +140,21 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
                 send_output_state(&resource, &output, &state.space);
                 state.wm.outputs.push((output, resource));
             }
+            wayluck_wm_manager_v1::Request::OfferWorkspace {
+                scene,
+                output,
+                name,
+            } => {
+                let output = output.data::<Output>().cloned();
+                if let (true, Some(output)) = (state.wm.manager.as_ref() == Some(manager), output) {
+                    state.offer_workspace(scene_of(&scene), output, name);
+                }
+            }
+            wayluck_wm_manager_v1::Request::OffersDone => {
+                if state.wm.manager.as_ref() == Some(manager) {
+                    state.offers_done();
+                }
+            }
             // Handled in destroyed, which also covers the client going away.
             wayluck_wm_manager_v1::Request::Destroy => {}
             wayluck_wm_manager_v1::Request::BindKey {
@@ -242,6 +257,7 @@ impl Dispatch<WayluckWmSceneV1, SceneId> for Wayluck {
     /// wayluck's own scene where they are (manager destroyed).
     fn destroyed(state: &mut Self, _client: ClientId, _scene: &WayluckWmSceneV1, id: &SceneId) {
         state.scenes.remove(*id);
+        state.stop_capture_sessions(&image_capture::Source::Scene(*id));
         state.loop_handle.insert_idle(|state| state.sync_space());
     }
 }

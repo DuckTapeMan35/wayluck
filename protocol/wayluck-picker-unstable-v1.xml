@@ -40,6 +40,16 @@
       <arg name="width" type="uint"/>
       <arg name="height" type="uint"/>
     </request>
+
+    <request name="workspace_source">
+      <description summary="a workspace, to capture">
+        A capture source for a workspace (by its id from a workspace
+        event): its windows, as they're laid out in it, whether it's shown
+        or not.
+      </description>
+      <arg name="source" type="new_id" interface="ext_image_capture_source_v1"/>
+      <arg name="workspace" type="uint"/>
+    </request>
   </interface>
 
   <interface name="wayluck_pick_v1" version="1">
@@ -59,14 +69,24 @@
 
     <event name="window">
       <description summary="a window can be shared">
-        One of the windows shown on the monitor named last (in a monitor
-        event before it), the topmost first. id is its
+        One of the windows of the workspace named last (in a workspace
+        event before it, since the last monitor event), or with none, of
+        what the monitor named last shows; the topmost first. id is its
         ext-foreign-toplevel-list identifier (as a number): it's shared as
         "Window: ID".
       </description>
       <arg name="id" type="uint"/>
       <arg name="title" type="string"/>
       <arg name="app_id" type="string"/>
+    </event>
+
+    <event name="workspace">
+      <description summary="a workspace, on the monitor named last">
+        As its window manager offered it, by name: the windows after it are
+        its own. id is to capture it (workspace_source).
+      </description>
+      <arg name="id" type="uint"/>
+      <arg name="name" type="string"/>
     </event>
 
     <event name="done">

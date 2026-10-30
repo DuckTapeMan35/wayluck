@@ -21,6 +21,13 @@ use std::collections::{HashMap, HashSet};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SceneId(u32);
 
+impl SceneId {
+    /// As a number, for clients that name scenes (the picker's workspaces).
+    pub fn number(self) -> u32 {
+        self.0
+    }
+}
+
 /// One scene: its windows, bottom first, and where each is.
 #[derive(Default)]
 pub struct Scene {
@@ -70,6 +77,11 @@ impl Scenes {
 
     pub fn exists(&self, id: SceneId) -> bool {
         self.by_id.contains_key(&id)
+    }
+
+    /// The scene with this number, if there is one.
+    pub fn numbered(&self, number: u32) -> Option<SceneId> {
+        Some(SceneId(number)).filter(|id| self.exists(*id))
     }
 
     /// Put a window in a scene at a place, on top of the others there (out

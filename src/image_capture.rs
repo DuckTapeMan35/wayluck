@@ -20,6 +20,7 @@
 use crate::{
     Wayluck,
     render::{self, Element},
+    scenes::SceneId,
     screencopy,
     windows::WindowId,
 };
@@ -69,13 +70,15 @@ use smithay::{
     },
     utils::{Clock, Monotonic, Physical, Point, Rectangle, Scale, Size, Transform},
 };
-use std::{collections::HashMap, sync::Mutex, time::Duration};
+use std::{sync::Mutex, time::Duration};
 
 /// What a capture source captures.
 #[derive(Clone, PartialEq)]
 pub enum Source {
     Output(Output),
     Window(WindowId),
+    /// A scene's windows, as laid out in it, shown or not
+    Scene(SceneId),
     /// It was gone already when the source was made.
     Gone,
 }
@@ -103,8 +106,8 @@ pub struct ImageCapture {
     sessions: Vec<Session>,
     /// Frames waiting to be copied.
     frames: Vec<Waiting>,
-    /// Captured windows' frame callbacks, by window.
-    pacers: HashMap<WindowId, RegistrationToken>,
+    /// Captured windows' and scenes' frame callbacks.
+    pacers: Vec<(Source, RegistrationToken)>,
 }
 
 /// The GPU wayluck draws with, and the modifiers it can draw XRGB8888
@@ -165,6 +168,10 @@ impl Wayluck {
                 let size = self.windows.get(*id)?.geometry().size;
                 (size.w, size.h).into()
             }
+            Source::Scene(id) => {
+                let size = self.scenes.get(*id)?.size;
+                (size.w, size.h).into()
+            }
             Source::Gone => return None,
         };
         (size.w > 0 && size.h > 0).then_some(size)
@@ -186,9 +193,7 @@ impl Wayluck {
         };
         let (size, _) = frame_size(full, fit);
         send_constraints(&session, size, self.image_capture.dmabuf.as_ref());
-        if let Source::Window(id) = source {
-            self.start_window_pacing(id);
-        }
+        self.start_capture_pacing(&source);
         self.image_capture.sessions.push(Session {
             resource: session,
             source,
@@ -212,9 +217,7 @@ impl Wayluck {
             session.resource.stopped();
             self.fail_frames_of(&session.resource);
         }
-        if let Source::Window(id) = gone {
-            self.stop_window_pacing(*id);
-        }
+        self.stop_capture_pacing(gone);
     }
 
     fn fail_frames_of(&mut self, session: &ExtImageCopyCaptureSessionV1) {
@@ -236,49 +239,57 @@ impl Wayluck {
         })
     }
 
-    /// A window got its first session: frame callbacks while it's off
-    /// screen (on screen, its output gives it them), at 60 Hz.
-    fn start_window_pacing(&mut self, id: WindowId) {
-        if self.image_capture.pacers.contains_key(&id) {
+    /// A window or scene got its first session: frame callbacks for the
+    /// windows while they're off screen (on screen, their output gives them
+    /// them), at 60 Hz.
+    fn start_capture_pacing(&mut self, source: &Source) {
+        let paced = source.clone();
+        if !matches!(paced, Source::Window(_) | Source::Scene(_))
+            || self.image_capture.pacers.iter().any(|(s, _)| *s == paced)
+        {
             return;
         }
         let every = Duration::from_nanos(1_000_000_000 / 60);
-        let pacer =
-            self.loop_handle
-                .insert_source(Timer::from_duration(every), move |_, _, state| {
-                    let Some(window) = state.windows.get(id).cloned() else {
-                        return TimeoutAction::Drop;
-                    };
-                    let on_screen = !state.space.outputs_for_element(&window).is_empty();
-                    let some_output = state.monitors().next().cloned();
-                    if let (false, Some(output)) = (on_screen, some_output) {
-                        let now = state.start_time.elapsed();
-                        window.send_frame(&output, now, Some(Duration::ZERO), |_, _| {
-                            Some(output.clone())
-                        });
-                    }
-                    TimeoutAction::ToDuration(every)
-                });
-        match pacer {
-            Ok(token) => {
-                self.image_capture.pacers.insert(id, token);
+        let timer = Timer::from_duration(every);
+        let pacer = self.loop_handle.insert_source(timer, move |_, _, state| {
+            let ids: Vec<WindowId> = match &paced {
+                Source::Window(id) => vec![*id],
+                Source::Scene(id) => (state.scenes.get(*id).into_iter())
+                    .flat_map(|scene| scene.windows().map(|(w, _)| w))
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let Some(output) = state.monitors().next().cloned() else {
+                return TimeoutAction::ToDuration(every);
+            };
+            let now = state.start_time.elapsed();
+            for id in ids {
+                let Some(window) = state.windows.get(id).cloned() else {
+                    continue;
+                };
+                if state.space.outputs_for_element(&window).is_empty() {
+                    window.send_frame(&output, now, Some(Duration::ZERO), |_, _| {
+                        Some(output.clone())
+                    });
+                }
             }
-            Err(e) => tracing::warn!("can't pace captured window {id}: {e}"),
+            TimeoutAction::ToDuration(every)
+        });
+        match pacer {
+            Ok(token) => self.image_capture.pacers.push((source.clone(), token)),
+            Err(e) => tracing::warn!("can't pace a capture's windows: {e}"),
         }
     }
 
     /// Its last session went: no more frame callbacks of its own.
-    fn stop_window_pacing(&mut self, id: WindowId) {
-        let source = Source::Window(id);
-        if self
-            .image_capture
-            .sessions
-            .iter()
-            .any(|s| s.source == source)
-        {
+    fn stop_capture_pacing(&mut self, source: &Source) {
+        if (self.image_capture.sessions.iter()).any(|s| s.source == *source) {
             return;
         }
-        if let Some(token) = self.image_capture.pacers.remove(&id) {
+        let pacers = std::mem::take(&mut self.image_capture.pacers);
+        let (stopped, kept) = pacers.into_iter().partition(|(s, _)| s == source);
+        self.image_capture.pacers = kept;
+        for (_, token) in stopped {
             self.loop_handle.remove(token);
         }
     }
@@ -423,6 +434,23 @@ where
             let corner = window.geometry().loc;
             let at = Point::<i32, Physical>::from((-corner.x, -corner.y));
             let elements = window.render_elements(renderer, at, Scale::from(1.0), 1.0);
+            (elements, 1.0)
+        }
+        Source::Scene(id) => {
+            let Some(scene) = state.scenes.get(*id) else {
+                return (Vec::new(), 1.0);
+            };
+            // Topmost first, as drawing wants them.
+            let windows: Vec<_> = (scene.windows().rev())
+                .filter_map(|(w, at)| Some((state.windows.get(w)?.clone(), at)))
+                .collect();
+            let elements = (windows.into_iter())
+                .flat_map(|(window, at)| {
+                    let at = at - window.geometry().loc;
+                    let at = Point::<i32, Physical>::from((at.x, at.y));
+                    window.render_elements(renderer, at, Scale::from(1.0), 1.0)
+                })
+                .collect();
             (elements, 1.0)
         }
         Source::Gone => (Vec::new(), 1.0),
@@ -620,12 +648,8 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for Wayluck {
             .position(|s| &s.resource == session)
             .map(|at| state.image_capture.sessions.remove(at));
         state.fail_frames_of(session);
-        if let Some(Session {
-            source: Source::Window(id),
-            ..
-        }) = gone
-        {
-            state.stop_window_pacing(id);
+        if let Some(gone) = gone {
+            state.stop_capture_pacing(&gone.source);
         }
     }
 }
