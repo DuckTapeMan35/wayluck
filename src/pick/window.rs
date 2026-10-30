@@ -1,8 +1,13 @@
-//! The picker's window: a list to choose from, drawn on the GPU (smithay's
-//! renderer, through winit, as a Wayland client). Fixed size, so the window
-//! manager floats it. Up and Down (or the pointer) select, Enter (or a
-//! click) chooses, Esc (or closing the window) cancels.
+//! The picker's window: a list to choose from, each with a live thumbnail,
+//! drawn on the GPU (smithay's renderer, through winit, as a
+//! Wayland client). Fixed size, so the window manager floats it. Up and Down
+//! (or the pointer) select, Enter (or a click) chooses, Esc (or closing the
+//! window) cancels.
 
+use super::{
+    capture::{Captures, Image},
+    text::Text,
+};
 use smithay::{
     backend::{
         allocator::Fourcc,
@@ -17,27 +22,33 @@ use smithay::{
         winit::{self, WinitEvent, WinitGraphicsBackend},
     },
     reexports::{
-        calloop::EventLoop,
+        calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic},
         winit::{dpi::LogicalSize, platform::wayland::WindowAttributesExtWayland, window::Window},
     },
     utils::{Logical, Physical, Point, Rectangle, Size, Transform},
 };
-
-use super::text::Text;
+use std::os::fd::AsFd;
+use wayland_client::{EventQueue, QueueHandle};
 
 /// The window's app id: what the window manager knows it by.
 const APP_ID: &str = "wayluck.picker";
 const TITLE: &str = "Choose what to share";
 
 // Its layout, in logical pixels: a heading, then a row for each choice.
-const WIDTH: i32 = 440;
+const WIDTH: i32 = 480;
 const PADDING: i32 = 12;
 const HEADING: i32 = 44;
-const ROW: i32 = 36;
+const ROW: i32 = 96;
 const TEXT: f32 = 15.0;
+
+/// The box a thumbnail fits in, keeping its shape: 16:9.
+const THUMBNAIL: (i32, i32) = (128, 72);
 
 const BACKGROUND: Color32F = Color32F::new(0.12, 0.12, 0.13, 1.0);
 const SELECTED: Color32F = Color32F::new(0.23, 0.43, 0.65, 1.0);
+
+/// Where a thumbnail will be, until its first frame.
+const NO_THUMBNAIL: Color32F = Color32F::new(0.2, 0.2, 0.22, 1.0);
 
 // Keys, as xkb keycodes (evdev's + 8): the same whatever the layout.
 const KEY_ESC: u32 = 1 + 8;
@@ -54,6 +65,11 @@ struct Picker {
     labels: Vec<String>,
     /// The heading and labels drawn, for the scale they were drawn at.
     drawn: Option<(f64, Vec<GlesTexture>)>,
+    captures: Captures,
+    /// To ask for the captures' next frames.
+    qh: QueueHandle<Captures>,
+    /// Each row's latest frame, once there is one.
+    thumbnails: Vec<Option<GlesTexture>>,
     selected: usize,
     /// The row under the pointer, if any.
     hovered: Option<usize>,
@@ -61,9 +77,13 @@ struct Picker {
     answer: Option<Option<usize>>,
 }
 
-/// Show labels, one per row: the row the user chooses, or None if they
-/// cancel.
-pub fn choose(labels: Vec<String>) -> Result<Option<usize>, Box<dyn std::error::Error>> {
+/// Show labels, one per row, with captures' thumbnails: the row the user
+/// chooses, or None if they cancel.
+pub fn choose(
+    labels: Vec<String>,
+    captures: Captures,
+    mut queue: EventQueue<Captures>,
+) -> Result<Option<usize>, Box<dyn std::error::Error>> {
     let text = Text::new()?;
     let height = HEADING + ROW * labels.len() as i32 + PADDING;
     let attributes = Window::default_attributes()
@@ -73,16 +93,40 @@ pub fn choose(labels: Vec<String>) -> Result<Option<usize>, Box<dyn std::error::
         .with_resizable(false)
         .with_decorations(false);
     let (backend, events) = winit::init_from_attributes::<GlesRenderer>(attributes)?;
+    let qh = queue.handle();
     backend.window().request_redraw();
 
     let mut event_loop = EventLoop::<Picker>::try_new()?;
     event_loop
         .handle()
         .insert_source(events, |event, _, picker| picker.handle(event))?;
+    // The captures' frames, when they come.
+    let connection = captures.connection().as_fd().try_clone_to_owned()?;
+    let readable = Generic::new(connection, Interest::READ, Mode::Level);
+    event_loop
+        .handle()
+        .insert_source(readable, move |_, _, picker| {
+            if let Some(reading) = queue.prepare_read() {
+                // Nothing to read after all is no error.
+                let _ = reading.read();
+            }
+            if let Err(e) = queue.dispatch_pending(&mut picker.captures) {
+                // The thumbnails stay as they are; the picker still works.
+                eprintln!("wayluck pick: thumbnails: {e}");
+                return Ok(PostAction::Remove);
+            }
+            if std::mem::take(&mut picker.captures.fresh) {
+                picker.backend.window().request_redraw();
+            }
+            Ok(PostAction::Continue)
+        })?;
     let mut picker = Picker {
         backend,
         text,
+        thumbnails: labels.iter().map(|_| None).collect(),
         labels,
+        captures,
+        qh,
         drawn: None,
         selected: 0,
         hovered: None,
@@ -187,8 +231,38 @@ impl Picker {
         Ok(())
     }
 
+    /// The thumbnails' new frames, onto their textures.
+    fn take_frames(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        for at in 0..self.thumbnails.len() {
+            let Some(image) = self.captures.thumbnails[at].image.take() else {
+                continue;
+            };
+            let renderer = self.backend.renderer();
+            let Image {
+                width,
+                height,
+                pixels,
+            } = image;
+            // The same size as the last: into the same texture.
+            let texture = &mut self.thumbnails[at];
+            match texture {
+                Some(t) if (t.width() as i32, t.height() as i32) == (width, height) => {
+                    let all = Rectangle::from_size((width, height).into());
+                    renderer.update_memory(t, &pixels, all)?;
+                }
+                _ => {
+                    let size = (width, height).into();
+                    *texture =
+                        Some(renderer.import_memory(&pixels, Fourcc::Xrgb8888, size, false)?);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn draw(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.textures()?;
+        self.take_frames()?;
         let size = self.size();
         let scale = self.scale();
         let px = |logical: i32| (logical as f64 * scale).round() as i32;
@@ -196,8 +270,10 @@ impl Picker {
         let (_, textures) = self.drawn.as_ref().ok_or("no text")?;
         let (heading, labels) = textures.split_first().ok_or("no text")?;
         let selected = self.selected;
+        let thumbnails = &self.thumbnails;
         {
             let (renderer, mut framebuffer) = self.backend.bind()?;
+
             // Flipped180: what winit's GL surface needs to come out the
             // right way up.
             let mut frame = renderer.render(&mut framebuffer, size, Transform::Flipped180)?;
@@ -212,12 +288,27 @@ impl Picker {
                     );
                     frame.draw_solid(at, &whole, SELECTED)?;
                 }
-                line(&mut frame, &whole, label, px(top), px(ROW), px(PADDING))?;
+                // The thumbnail at the left, in the middle of the row; the
+                // label after it.
+                let (w, h) = THUMBNAIL;
+                let slot = Rectangle::new(
+                    (px(PADDING), px(top + (ROW - h) / 2)).into(),
+                    (px(w), px(h)).into(),
+                );
+                match &thumbnails[row] {
+                    Some(t) => thumbnail(&mut frame, &whole, t, slot)?,
+                    None => frame.draw_solid(slot, &whole, NO_THUMBNAIL)?,
+                }
+                let left = px(PADDING + w + PADDING);
+                line(&mut frame, &whole, label, px(top), px(ROW), left)?;
             }
+
             // Showing it (submit) waits for the drawing: nothing to wait for.
             let _drawn = frame.finish()?;
         }
         self.backend.submit(None)?;
+        // Drawn: the thumbnails' next frames.
+        self.captures.next(&self.qh);
         Ok(())
     }
 }
@@ -234,4 +325,21 @@ fn line(
 ) -> Result<(), GlesError> {
     let at = Point::from((left, top + (height - text.height() as i32) / 2));
     frame.render_texture_at(text, at, 1, 1.0, Transform::Normal, whole, &[], 1.0)
+}
+
+/// Draw a thumbnail as big as fits in slot, keeping its shape, centred.
+fn thumbnail(
+    frame: &mut GlesFrame<'_, '_>,
+    whole: &[Rectangle<i32, Physical>],
+    texture: &GlesTexture,
+    slot: Rectangle<i32, Physical>,
+) -> Result<(), GlesError> {
+    let (w, h) = (texture.width() as f64, texture.height() as f64);
+    let fit = (slot.size.w as f64 / w).min(slot.size.h as f64 / h);
+    let size: Size<i32, Physical> = ((w * fit).round() as i32, (h * fit).round() as i32).into();
+    let at = slot.loc + Point::from(((slot.size.w - size.w) / 2, (slot.size.h - size.h) / 2));
+    let src = Rectangle::from_size(texture.size()).to_f64();
+    let dst = Rectangle::new(at, size);
+    // Frame's, not GlesFrame's own (which takes a shader too).
+    Frame::render_texture_from_to(frame, texture, src, dst, whole, &[], Transform::Normal, 1.0)
 }

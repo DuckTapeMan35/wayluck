@@ -1,10 +1,11 @@
 //! `wayluck pick`: xdg-desktop-portal-wlr's chooser_cmd. When an app asks to
 //! share the screen, the portal runs it: it asks wayluck what can be shared,
-//! shows the user a picker, and prints the choice the
+//! shows the user a picker with live thumbnails, and prints the choice the
 //! way the portal wants it ("Monitor: NAME"). The picker is a window like
 //! any other: the window manager places it (fixed size: floating).
 
 mod ask;
+mod capture;
 mod text;
 mod window;
 
@@ -31,6 +32,8 @@ fn pick() -> Result<Option<String>, Box<dyn std::error::Error>> {
         return Err("nothing to share".into());
     }
     let labels = monitors.iter().map(ask::Monitor::label).collect();
-    let chosen = window::choose(labels)?;
+    let names: Vec<String> = monitors.iter().map(|m| m.name.clone()).collect();
+    let (captures, queue) = capture::Captures::start(&names)?;
+    let chosen = window::choose(labels, captures, queue)?;
     Ok(chosen.map(|at| format!("Monitor: {}", monitors[at].name)))
 }

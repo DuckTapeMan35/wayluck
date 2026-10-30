@@ -17,6 +17,9 @@ wayland-client = "0.31.15"
 bitflags = "2.13.2"
 xcursor = "0.3.11"
 fontdue = "0.9.5"
+# The picker's thumbnails: the capture protocols' client
+# side (the crate smithay's server side comes from).
+wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
 
 [dependencies.smithay]
 version = "0.7.0"
