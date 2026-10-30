@@ -2,18 +2,19 @@
 //! chooser_cmd: it asks over wayluck_picker_unstable_v1, shows the user its
 //! picker, and prints the user's choice for the portal. Nothing is shared by
 //! asking: the user decides, in the picker.
-
-use smithay::reexports::wayland_server::{
-    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New,
-};
+//! Its thumbnails are captures made small here, so each holds little memory.
 
 use crate::{
     Wayluck,
+    image_capture::Source,
     protocol::picker::server::{
         wayluck_pick_v1::{self, WayluckPickV1},
         wayluck_picker_manager_v1::{self, WayluckPickerManagerV1},
     },
     windows,
+};
+use smithay::reexports::wayland_server::{
+    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
 };
 
 impl Wayluck {
@@ -65,9 +66,24 @@ impl Dispatch<WayluckPickerManagerV1, ()> for Wayluck {
         _dh: &DisplayHandle,
         data_init: &mut DataInit<'_, Self>,
     ) {
-        if let wayluck_picker_manager_v1::Request::Pick { id } = request {
-            let pick = data_init.init(id, ());
-            state.pick(pick);
+        use wayluck_picker_manager_v1::Request;
+        match request {
+            Request::Pick { id } => {
+                let pick = data_init.init(id, ());
+                state.pick(pick);
+            }
+            Request::Thumbnail {
+                session,
+                source,
+                width,
+                height,
+            } => {
+                let session = data_init.init(session, ());
+                let source = source.data::<Source>().cloned().unwrap_or(Source::Gone);
+                let fit = (width as i32, height as i32).into();
+                state.start_session(session, source, false, Some(fit));
+            }
+            _ => {}
         }
     }
 }

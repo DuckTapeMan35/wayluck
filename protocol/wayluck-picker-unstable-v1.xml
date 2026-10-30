@@ -25,6 +25,21 @@
       </description>
       <arg name="id" type="new_id" interface="wayluck_pick_v1"/>
     </request>
+
+    <request name="thumbnail">
+      <description summary="capture a source, small">
+        Like ext_image_copy_capture_manager_v1.create_session (without
+        cursors), but the session's frames are no bigger than width ×
+        height: the source drawn scaled down to fit, keeping its shape (or
+        as it is, if it fits already). Its buffer_size events say the size.
+        For a picker's thumbnails, which would otherwise each hold a frame
+        as big as its source.
+      </description>
+      <arg name="session" type="new_id" interface="ext_image_copy_capture_session_v1"/>
+      <arg name="source" type="object" interface="ext_image_capture_source_v1"/>
+      <arg name="width" type="uint"/>
+      <arg name="height" type="uint"/>
+    </request>
   </interface>
 
   <interface name="wayluck_pick_v1" version="1">

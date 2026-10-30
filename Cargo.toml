@@ -8,8 +8,6 @@ description = "A Wayland compositor that leaves placement to a separate window m
 [dependencies]
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-# The window manager protocol's server side, generated from its XML at build
-# time; the same versions smithay uses.
 wayland-server = "0.31.14"
 wayland-backend = "0.3.17"
 wayland-scanner = "0.31.11"
@@ -17,9 +15,7 @@ wayland-client = "0.31.15"
 bitflags = "2.13.2"
 xcursor = "0.3.11"
 fontdue = "0.9.5"
-# The picker's thumbnails: the capture protocols' client
-# side (the crate smithay's server side comes from).
-wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
+wayland-protocols = { version = "0.32.13", features = ["client", "server", "staging"] }
 
 [dependencies.smithay]
 version = "0.7.0"

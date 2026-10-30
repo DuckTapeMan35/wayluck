@@ -45,6 +45,9 @@ const ROW: i32 = 96;
 const INDENT: i32 = 24;
 /// The box a thumbnail fits in, keeping its shape: 16:9.
 const THUMBNAIL: (i32, i32) = (128, 72);
+/// How big thumbnails' frames are: twice their box, so they're sharp on
+/// monitors scaled up to 2.
+pub const THUMBNAIL_FRAMES: (u32, u32) = (THUMBNAIL.0 as u32 * 2, THUMBNAIL.1 as u32 * 2);
 const TEXT: f32 = 15.0;
 /// How far one notch of a mouse wheel scrolls.
 const NOTCH: f64 = ROW as f64 / 2.0;

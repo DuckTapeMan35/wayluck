@@ -14,7 +14,7 @@ use smithay::{
         allocator::{Buffer as _, Fourcc, dmabuf::Dmabuf},
         renderer::{
             Bind, ExportMem, ImportAll, ImportMem, Offscreen, Renderer, Texture,
-            damage::OutputDamageTracker, gles::GlesRenderbuffer,
+            damage::OutputDamageTracker, element::RenderElement, gles::GlesRenderbuffer,
         },
     },
     output::Output,
@@ -377,11 +377,11 @@ impl Wayluck {
 
 /// Draw elements offscreen in a picture of size (at scale),
 /// and copy region of it into buffer (shared memory). Also for ext-image-copy-capture.
-pub fn copy_into<R>(
+pub fn copy_into<R, E>(
     renderer: &mut R,
     size: Size<i32, Physical>,
     scale: f64,
-    elements: &[&Element<R>],
+    elements: &[&E],
     region: Rectangle<i32, Physical>,
     buffer: &WlBuffer,
 ) -> Result<(), Box<dyn std::error::Error>>
@@ -389,6 +389,7 @@ where
     R: Renderer + ImportAll + ImportMem + Offscreen<GlesRenderbuffer> + ExportMem + Bind<Dmabuf>,
     R::TextureId: Clone + Texture + Send + 'static,
     R::Error: 'static,
+    E: RenderElement<R>,
 {
     if let Ok(dmabuf) = get_dmabuf(buffer) {
         return draw_into(renderer, size, scale, elements, region, dmabuf.clone());
@@ -430,11 +431,11 @@ where
 /// Draw elements into a client's dmabuf, on the GPU: nothing is copied.
 /// Only whole frames (region all of size): a region's buffer is only ever
 /// asked for in shared memory.
-fn draw_into<R>(
+fn draw_into<R, E>(
     renderer: &mut R,
     size: Size<i32, Physical>,
     scale: f64,
-    elements: &[&Element<R>],
+    elements: &[&E],
     region: Rectangle<i32, Physical>,
     mut dmabuf: Dmabuf,
 ) -> Result<(), Box<dyn std::error::Error>>
@@ -442,6 +443,7 @@ where
     R: Renderer + ImportAll + ImportMem + Bind<Dmabuf>,
     R::TextureId: Clone + Texture + Send + 'static,
     R::Error: 'static,
+    E: RenderElement<R>,
 {
     if region != Rectangle::from_size(size) {
         return Err("only whole frames are drawn into dmabufs".into());

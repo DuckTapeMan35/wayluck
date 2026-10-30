@@ -3,19 +3,34 @@
 //! xdg-desktop-portal-wlr). smithay doesn't have them; this does, into
 //! shared memory or into dmabufs, on the GPU.
 //!
+//! A source is an output or a window (by its handle from the window list).
+//! A session on a source says what buffer to give it:
 //! XRGB8888 at the source's size, in shared memory or a dmabuf on wayluck's
 //! GPU (if the backend says which: DmabufTarget), and again if that changes
 //! (a frame made for the old size fails, so the client makes a new buffer).
-//! A session's first frame is copied at once; each later one once something in the
+//! A session made for a picker's thumbnail has smaller frames:
+//! the source drawn shrunk to fit. A session's first frame is copied at
+//! once; each later one once something in the source changed (the session's
+//! own damage tracker says what). A window being captured keeps drawing even
+//! off screen: it gets frame callbacks while it has a session. Cursor
+//! sessions aren't offered yet: they stop at once (paint_cursors draws the
+//! cursor into frames instead).
 //!
-use std::{collections::HashMap, sync::Mutex, time::Duration};
 
+use crate::{
+    Wayluck,
+    render::{self, Element},
+    screencopy,
+    windows::WindowId,
+};
 use smithay::{
     backend::{
         allocator::{Fourcc, Modifier, dmabuf::Dmabuf, format::FormatSet},
         renderer::{
             Bind, ExportMem, ImportAll, ImportMem, Offscreen, Renderer, Texture,
-            damage::OutputDamageTracker, element::AsRenderElements, gles::GlesRenderbuffer,
+            damage::OutputDamageTracker,
+            element::{AsRenderElements, utils::RescaleRenderElement},
+            gles::GlesRenderbuffer,
         },
     },
     output::Output,
@@ -54,13 +69,7 @@ use smithay::{
     },
     utils::{Clock, Monotonic, Physical, Point, Rectangle, Scale, Size, Transform},
 };
-
-use crate::{
-    Wayluck,
-    render::{self, Element},
-    screencopy,
-    windows::WindowId,
-};
+use std::{collections::HashMap, sync::Mutex, time::Duration};
 
 /// What a capture source captures.
 #[derive(Clone, PartialEq)]
@@ -120,6 +129,8 @@ struct Session {
     resource: ExtImageCopyCaptureSessionV1,
     source: Source,
     cursors: bool,
+    /// How big its frames may be, if smaller than the source
+    fit: Option<Size<i32, Physical>>,
     /// The buffer size it last told its client.
     size: Size<i32, Physical>,
     /// What the source last showed, to tell when it changed, and where.
@@ -157,6 +168,37 @@ impl Wayluck {
             Source::Gone => return None,
         };
         (size.w > 0 && size.h > 0).then_some(size)
+    }
+
+    /// A new session on source (painting the cursor in, with cursors), its
+    /// frames no bigger than fit if given: its client hears what buffer to
+    /// give it.
+    pub fn start_session(
+        &mut self,
+        session: ExtImageCopyCaptureSessionV1,
+        source: Source,
+        cursors: bool,
+        fit: Option<Size<i32, Physical>>,
+    ) {
+        let Some(full) = self.source_size(&source) else {
+            session.stopped();
+            return;
+        };
+        let (size, _) = frame_size(full, fit);
+        send_constraints(&session, size, self.image_capture.dmabuf.as_ref());
+        if let Source::Window(id) = source {
+            self.start_window_pacing(id);
+        }
+        self.image_capture.sessions.push(Session {
+            resource: session,
+            source,
+            cursors,
+            fit,
+            size,
+            damage: OutputDamageTracker::new(size, 1.0, Transform::Normal),
+            copied: false,
+            frame: None,
+        });
     }
 
     /// The sessions on a source end (it's gone): their clients hear, and
@@ -242,6 +284,24 @@ impl Wayluck {
     }
 }
 
+/// How big a session's frames of a source this big are, and how much
+/// smaller than the source that is: as big as the source, or shrunk to fit
+/// in fit, keeping its shape.
+fn frame_size(
+    source: Size<i32, Physical>,
+    fit: Option<Size<i32, Physical>>,
+) -> (Size<i32, Physical>, f64) {
+    let Some(fit) = fit else {
+        return (source, 1.0);
+    };
+    let shrink = (fit.w as f64 / source.w as f64)
+        .min(fit.h as f64 / source.h as f64)
+        .min(1.0);
+    let w = (source.w as f64 * shrink).round().max(1.0) as i32;
+    let h = (source.h as f64 * shrink).round().max(1.0) as i32;
+    ((w, h).into(), shrink)
+}
+
 /// Tell a session's client what buffer to give it: shared memory, or a
 /// dmabuf on wayluck's GPU (if dmabuf says which).
 fn send_constraints(
@@ -278,11 +338,12 @@ where
             continue;
         };
         let source = state.image_capture.sessions[at].source.clone();
-        let Some(size) = state.source_size(&source) else {
+        let Some(full) = state.source_size(&source) else {
             state.stop_capture_sessions(&source);
             w.frame.failed(FailureReason::Stopped);
             continue;
         };
+        let (size, shrink) = frame_size(full, state.image_capture.sessions[at].fit);
         // Its size changed (a window resized): the client hears the new
         // one, and makes a new buffer for its next frame.
         let session = &mut state.image_capture.sessions[at];
@@ -296,6 +357,10 @@ where
         }
         let cursors = session.cursors;
         let (elements, scale) = source_elements(state, &source, renderer, cursors);
+        // Shrunk to the frame's size, from its top left corner.
+        let elements: Vec<_> = (elements.into_iter())
+            .map(|e| RescaleRenderElement::from_element(e, Point::default(), shrink))
+            .collect();
         let session = &mut state.image_capture.sessions[at];
         let damage = session.damage.damage_output(1, &elements).ok();
         let damage: Vec<Rectangle<i32, Physical>> =
@@ -305,7 +370,7 @@ where
             continue;
         }
         let first = !session.copied;
-        let drawn: Vec<&Element<R>> = elements.iter().collect();
+        let drawn: Vec<_> = elements.iter().collect();
         let all = Rectangle::from_size(size);
         match screencopy::copy_into(renderer, size, scale, &drawn, all, &w.buffer) {
             Ok(()) => {
@@ -499,23 +564,8 @@ impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for Wayluck {
                 };
                 let session = data_init.init(session, ());
                 let source = source.data::<Source>().cloned().unwrap_or(Source::Gone);
-                let Some(size) = state.source_size(&source) else {
-                    session.stopped();
-                    return;
-                };
-                send_constraints(&session, size, state.image_capture.dmabuf.as_ref());
-                if let Source::Window(id) = source {
-                    state.start_window_pacing(id);
-                }
-                state.image_capture.sessions.push(Session {
-                    resource: session,
-                    source,
-                    cursors: options.contains(Options::PaintCursors),
-                    size,
-                    damage: OutputDamageTracker::new(size, 1.0, Transform::Normal),
-                    copied: false,
-                    frame: None,
-                });
+                let cursors = options.contains(Options::PaintCursors);
+                state.start_session(session, source, cursors, None);
             }
             Request::CreatePointerCursorSession { session, .. } => {
                 data_init.init(session, ());

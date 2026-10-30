@@ -61,7 +61,7 @@ fn pick() -> Result<Option<String>, Box<dyn std::error::Error>> {
         }
     }
     let sources: Vec<_> = choices.iter().map(|c| c.source.clone()).collect();
-    let (captures, queue) = capture::Captures::start(&sources)?;
+    let (captures, queue) = capture::Captures::start(&sources, window::THUMBNAIL_FRAMES)?;
     let rows = choices.iter().map(|c| c.row.clone()).collect();
     let chosen = window::choose(rows, captures, queue)?;
     Ok(chosen.map(|at| choices[at].answer.clone()))

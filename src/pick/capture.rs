@@ -1,11 +1,13 @@
 //! Live thumbnails: each monitor and window captured (ext-image-copy-capture;
 //! a window found by its id in ext-foreign-toplevel-list), frame after
-//! frame, over a connection of the picker's own. A frame comes into a dmabuf
-//! on wayluck's GPU when it offers one (the picker draws it from there:
-//! nothing is copied), else into shared memory. The next is asked for once
-//! the last was drawn (next), so frames come no faster than the picker shows
-//! them.
+//! frame, small (wayluck draws them shrunk: wayluck_picker_manager_v1's
+//! thumbnail), over a connection of the picker's own. A frame comes into a
+//! dmabuf on wayluck's GPU when it offers one (the picker draws it from
+//! there: nothing is copied), else into shared memory. The next is asked for
+//! once the last was drawn (next), so frames come no faster than the picker
+//! shows them.
 
+use crate::protocol::picker::client::wayluck_picker_manager_v1::WayluckPickerManagerV1;
 use smithay::{
     backend::{
         allocator::{
@@ -47,7 +49,6 @@ use wayland_protocols::ext::{
     },
     image_copy_capture::v1::client::{
         ext_image_copy_capture_frame_v1::{self, ExtImageCopyCaptureFrameV1},
-        ext_image_copy_capture_manager_v1::{ExtImageCopyCaptureManagerV1, Options},
         ext_image_copy_capture_session_v1::{self, ExtImageCopyCaptureSessionV1},
     },
 };
@@ -124,10 +125,12 @@ enum Memory {
 }
 
 impl Captures {
-    /// Start capturing these sources, a thumbnail for each. The queue is to
-    /// be dispatched with the captures as its connection has events
+    /// Start capturing these sources, a thumbnail for each, its frames no
+    /// bigger than fit. The queue is to be dispatched with the captures as
+    /// its connection has events (window.rs).
     pub fn start(
         sources: &[Source],
+        fit: (u32, u32),
     ) -> Result<(Captures, EventQueue<Captures>), Box<dyn std::error::Error>> {
         let connection = Connection::connect_to_env()?;
         let (globals, mut queue) = registry_queue_init::<Captures>(&connection)?;
@@ -140,7 +143,7 @@ impl Captures {
         let window_sources: Option<ExtForeignToplevelImageCaptureSourceManagerV1> =
             globals.bind(&qh, 1..=1, ()).ok();
         let list: Option<ExtForeignToplevelListV1> = globals.bind(&qh, 1..=1, ()).ok();
-        let copier: ExtImageCopyCaptureManagerV1 = globals.bind(&qh, 1..=1, ())?;
+        let picker: WayluckPickerManagerV1 = globals.bind(&qh, 1..=1, ())?;
         // Version 3: buffers made at once (create_immed).
         let linux_dmabuf = globals.bind(&qh, 3..=3, ()).ok();
         // Every output, by name (wl_output 4 says it).
@@ -180,7 +183,8 @@ impl Captures {
                 }
             };
             if let Some(source) = source {
-                thumbnail.session = Some(copier.create_session(&source, Options::empty(), &qh, at));
+                let (w, h) = fit;
+                thumbnail.session = Some(picker.thumbnail(&source, w, h, &qh, at));
                 source.destroy();
             }
             captures.thumbnails.push(thumbnail);
@@ -505,7 +509,7 @@ ignore! {
     WlBuffer, ();
     ExtOutputImageCaptureSourceManagerV1, ();
     ExtImageCaptureSourceV1, ();
-    ExtImageCopyCaptureManagerV1, ();
+    WayluckPickerManagerV1, ();
     ZwpLinuxDmabufV1, ();
     ZwpLinuxBufferParamsV1, ();
     ExtForeignToplevelImageCaptureSourceManagerV1, ();
