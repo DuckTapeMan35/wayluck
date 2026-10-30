@@ -1,10 +1,21 @@
 //! Everything wayluck keeps, and the socket clients connect to.
 
-use crate::{atomic::Pending, cursor::Cursor, screencopy, windows::Windows, wm::WmState};
+use crate::{
+    atomic::Pending,
+    cursor::Cursor,
+    image_capture::ImageCapture,
+    scenes::{SceneId, Scenes},
+    screencopy,
+    toplevel_list::ToplevelList,
+    virtual_output::VirtualOutput,
+    windows::Windows,
+    wm::WmState,
+};
 use smithay::{
     backend::allocator::dmabuf::Dmabuf,
     desktop::{LayerSurface, PopupManager, Space, Window},
     input::{Seat, SeatState, keyboard::Keycode},
+    output::Output,
     reexports::{
         calloop::{
             EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction, generic::Generic,
@@ -20,7 +31,10 @@ use smithay::{
         dmabuf::DmabufState,
         drm_syncobj::DrmSyncobjState,
         output::OutputManagerState,
-        selection::data_device::DataDeviceState,
+        selection::{
+            data_device::DataDeviceState, ext_data_control,
+            primary_selection::PrimarySelectionState, wlr_data_control,
+        },
         shell::{
             wlr_layer::WlrLayerShellState,
             xdg::{XdgShellState, decoration::XdgDecorationState},
@@ -63,10 +77,24 @@ pub struct Wayluck {
     pub pending: Option<Pending>,
     /// Screenshots and screen-sharing frames waiting for a frame drawn
     pub screencopies: Vec<screencopy::Copy>,
+    /// Captures of outputs and windows, the standard way.
+    pub image_capture: ImageCapture,
+    /// Every window, for clients that list them (toplevel_list.rs).
+    pub toplevel_list: ToplevelList,
+    /// Outputs being captured, and when a frame of each was last asked for.
+    pub captures: Vec<(Output, std::time::Instant)>,
     /// A launcher or bar holding the keyboard instead of the focused window.
     pub layer_focus: Option<LayerSurface>,
     /// Every client window, in the order they appeared.
     pub windows: Windows,
+    /// Where windows are: in scenes, shown on outputs.
+    pub scenes: Scenes,
+    /// wayluck's own scene, shown when there's no window manager.
+    pub own_scene: SceneId,
+    /// Outputs with no screen behind them (virtual_output.rs).
+    pub virtuals: Vec<VirtualOutput>,
+    /// Virtual outputs made so far: the next is named after it.
+    pub virtual_count: u32,
     /// What's drawn, and where: the outputs, and the windows shown on them.
     pub space: Space<Window>,
     // smithay's state for each global wayluck offers.
@@ -75,6 +103,9 @@ pub struct Wayluck {
     pub output_manager_state: OutputManagerState,
     pub xdg_shell_state: XdgShellState,
     pub data_device_state: DataDeviceState,
+    pub primary_selection_state: PrimarySelectionState,
+    pub wlr_data_control_state: wlr_data_control::DataControlState,
+    pub ext_data_control_state: ext_data_control::DataControlState,
     pub xdg_decoration_state: XdgDecorationState,
     pub layer_shell_state: WlrLayerShellState,
     pub dmabuf_state: DmabufState,
@@ -97,6 +128,13 @@ impl Wayluck {
         let socket_name = listen(display, event_loop);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
+        // Middle-click paste, and clipboard tools (handlers/clipboard.rs).
+        let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
+        let primary = Some(&primary_selection_state);
+        let wlr_data_control_state =
+            wlr_data_control::DataControlState::new::<Self, _>(&dh, primary, |_| true);
+        let ext_data_control_state =
+            ext_data_control::DataControlState::new::<Self, _>(&dh, primary, |_| true);
         // Clients leave decorations to the compositor (handlers/decoration.rs).
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
         // Bars, wallpapers, notifications (handlers/layer_shell.rs).
@@ -104,8 +142,14 @@ impl Wayluck {
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
         let wm = WmState::new(&dh);
-        // Screenshots and screen sharing.
+        let mut scenes = Scenes::default();
+        let own_scene = scenes.add();
+        // Screenshots and screen sharing and the list of windows a client can pick one from.
         Self::screencopy_global(&dh);
+        Self::toplevel_list_global(&dh);
+        Self::image_capture_globals(&dh);
+        // Asking the user what to share.
+        Self::picker_global(&dh);
         // One keyboard (the default keymap; 200 ms delay, 25 repeats/s) and
         // one pointer, whatever the backend has.
         seat.add_keyboard(Default::default(), 200, 25)
@@ -125,11 +169,17 @@ impl Wayluck {
             keys_to_wm: Vec::new(),
             pending: None,
             screencopies: Vec::new(),
+            image_capture: ImageCapture::default(),
+            toplevel_list: ToplevelList::default(),
+            captures: Vec::new(),
             layer_focus: None,
             shm_state,
             output_manager_state,
             xdg_shell_state,
             data_device_state,
+            primary_selection_state,
+            wlr_data_control_state,
+            ext_data_control_state,
             xdg_decoration_state,
             layer_shell_state,
             // Its global is made by the backend, which knows the formats.
@@ -139,6 +189,10 @@ impl Wayluck {
             seat_state,
             seat,
             windows: Windows::default(),
+            scenes,
+            own_scene,
+            virtuals: Vec::new(),
+            virtual_count: 0,
             start_time: std::time::Instant::now(),
             space: Space::default(),
         }

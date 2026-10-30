@@ -1,6 +1,6 @@
 //! Drawing a frame, whatever the backend: nested (winit) or on hardware (DRM).
 
-use crate::{Wayluck, layers::Side, windows::Windows};
+use crate::{Wayluck, layers::Side};
 use smithay::{
     backend::renderer::{
         Color32F, ImportAll, ImportMem, Renderer, Texture,
@@ -57,8 +57,8 @@ where
 }
 
 /// What output shows, front to back: the cursor (where wayluck draws it),
-/// bars and overlays, every window on it with its border, then wallpapers
-/// and what else is below windows. Each backend draws these its own way.
+/// bars and overlays, the windows of the scene it shows with their borders,
+/// then wallpapers and what else is below windows. Each backend draws these its own way.
 pub fn elements<R>(state: &mut Wayluck, output: &Output, renderer: &mut R) -> Vec<Element<R>>
 where
     R: Renderer + ImportAll + ImportMem,
@@ -67,39 +67,54 @@ where
     let Some(area) = state.space.output_geometry(output) else {
         return Vec::new();
     };
+
     let scale = Scale::from(output.current_scale().fractional_scale());
+
     // Front to back: the top window first, its border just behind it, so a
     // window's border never covers the window above it.
     let mut elements: Vec<Element<R>> = Vec::new();
+
     let pointer = state.seat.get_pointer().unwrap().current_location();
+
     if area.to_f64().contains(pointer) {
         let at = pointer - area.loc.to_f64();
         elements.extend(state.cursor.elements(renderer, at, scale));
     }
-    let shown: Vec<_> = state.space.elements().rev().cloned().collect();
+
     // Bars and overlays above windows; then the windows; then what's below.
+    // A virtual output's are its template's (virtual_output.rs).
+    let layers_from = state.layers_from(output);
     let above = state.layers(output, Side::Above);
-    elements.extend(layer_elements(output, renderer, scale, above));
-    for window in shown {
-        let Some(loc) = state.space.element_location(&window) else {
+    if let Some(from) = &layers_from {
+        elements.extend(layer_elements(from, renderer, scale, above));
+    }
+
+    // The windows of the scene it shows, where they are in it: the scene
+    // is drawn from the output's corner (scenes.rs). Top window first.
+    let shown: Vec<_> = (state.scenes.shown_on(output))
+        .map(|scene| scene.windows().rev().collect())
+        .unwrap_or_default();
+    for (id, at) in shown {
+        let Some(window) = state.windows.get(id).cloned() else {
             continue;
         };
-        let at = (loc - window.geometry().loc - area.loc).to_physical_precise_round(scale);
-        elements.extend(window.render_elements::<Element<R>>(renderer, at, scale, 1.0));
-        let id = window
-            .toplevel()
-            .and_then(|t| Windows::id_of(t.wl_surface()));
-        if let Some(border) = id.and_then(|id| state.windows.border_mut(id)) {
-            let content = Rectangle::new(loc, window.geometry().size);
+        let drawn_at = (at - window.geometry().loc).to_physical_precise_round(scale);
+        elements.extend(window.render_elements::<Element<R>>(renderer, drawn_at, scale, 1.0));
+        if let Some(border) = state.windows.border_mut(id) {
+            let content = Rectangle::new(at, window.geometry().size);
             elements.extend(
                 border
-                    .elements(content, area.loc, scale)
+                    .elements(content, Point::default(), scale)
                     .map(Element::Border),
             );
         }
     }
+
     let below = state.layers(output, Side::Below);
-    elements.extend(layer_elements(output, renderer, scale, below));
+    if let Some(from) = &layers_from {
+        elements.extend(layer_elements(from, renderer, scale, below));
+    }
+
     elements
 }
 
@@ -133,7 +148,11 @@ where
 /// their next one, and drop what's gone.
 pub fn frame_done(state: &mut Wayluck, output: &Output) {
     let now = state.start_time.elapsed();
+    // Only to windows on it: those elsewhere are paced by their own output
     for window in state.space.elements() {
+        if !state.space.outputs_for_element(window).contains(output) {
+            continue;
+        }
         window.send_frame(output, now, Some(Duration::ZERO), |_, _| {
             Some(output.clone())
         });

@@ -9,15 +9,17 @@ use crate::{
         wayluck_wm_key_binding_v1::{self, WayluckWmKeyBindingV1},
         wayluck_wm_manager_v1::{self, WayluckWmManagerV1},
         wayluck_wm_output_v1::{self, WayluckWmOutputV1},
+        wayluck_wm_scene_v1::{self, WayluckWmSceneV1},
         wayluck_wm_transaction_v1::{self, WayluckWmTransactionV1},
         wayluck_wm_window_v1::{self, WayluckWmWindowV1},
     },
+    scenes::SceneId,
     windows::{self, Change, WindowId, Windows},
 };
 use smithay::{
     desktop::{Space, Window, layer_map_for_output},
     input::keyboard::{Keysym, ModifiersState},
-    output::Output,
+    output::{Output, PhysicalProperties, Subpixel},
     reexports::wayland_server::{
         Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, backend::ClientId,
     },
@@ -107,6 +109,37 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
             wayluck_wm_manager_v1::Request::Transaction { id } => {
                 data_init.init(id, Transaction::new(manager));
             }
+            // An unavailable manager's scenes exist, but nothing shows them
+            // (its transactions aren't applied).
+            wayluck_wm_manager_v1::Request::Scene { id } => {
+                data_init.init(id, state.scenes.add());
+            }
+            wayluck_wm_manager_v1::Request::VirtualOutput {
+                id,
+                width,
+                height,
+                template,
+                refresh,
+            } => {
+                // An unavailable manager's (or one of no size) is an output
+                // that exists nowhere: no global, nothing shown.
+                if state.wm.manager.as_ref() != Some(manager) || width <= 0 || height <= 0 {
+                    let nowhere = PhysicalProperties {
+                        size: (0, 0).into(),
+                        subpixel: Subpixel::Unknown,
+                        make: String::new(),
+                        model: String::new(),
+                    };
+                    data_init.init(id, Output::new("NONE".into(), nowhere));
+                    return;
+                }
+                let template = template.and_then(|t| t.data::<Output>().cloned());
+                let size = (width, height).into();
+                let output = state.add_virtual_output(size, template, refresh);
+                let resource = data_init.init(id, output.clone());
+                send_output_state(&resource, &output, &state.space);
+                state.wm.outputs.push((output, resource));
+            }
             // Handled in destroyed, which also covers the client going away.
             wayluck_wm_manager_v1::Request::Destroy => {}
             wayluck_wm_manager_v1::Request::BindKey {
@@ -167,10 +200,11 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
     fn destroyed(state: &mut Self, _client: ClientId, manager: &WayluckWmManagerV1, _data: &()) {
         if state.wm.manager.as_ref() == Some(manager) {
             tracing::info!("window manager gone");
-            // Its objects go with it; windows stay where they are.
+            // Its objects go with it; windows stay where they are, in wayluck's own scene.
             state.wm = WmState::default();
             state.configure_waiting();
             state.show_pending();
+            state.show_own_scene();
         }
     }
 }
@@ -186,6 +220,30 @@ pub struct Transaction {
 struct Pending {
     changes: Vec<Change>,
     committed: bool,
+}
+
+// A scene: windows laid out together. Everything about it is
+// done in transactions; it only goes.
+impl Dispatch<WayluckWmSceneV1, SceneId> for Wayluck {
+    fn request(
+        _state: &mut Self,
+        _client: &Client,
+        _scene: &WayluckWmSceneV1,
+        _request: wayluck_wm_scene_v1::Request,
+        _id: &SceneId,
+        _dh: &DisplayHandle,
+        _data_init: &mut DataInit<'_, Self>,
+    ) {
+    }
+
+    /// Its windows are in no scene any more, and outputs showing it show
+    /// nothing. The space follows once the loop is idle: if its window
+    /// manager is going away altogether, the windows first move to
+    /// wayluck's own scene where they are (manager destroyed).
+    fn destroyed(state: &mut Self, _client: ClientId, _scene: &WayluckWmSceneV1, id: &SceneId) {
+        state.scenes.remove(*id);
+        state.loop_handle.insert_idle(|state| state.sync_space());
+    }
 }
 
 impl Transaction {
@@ -212,6 +270,7 @@ impl Dispatch<WayluckWmTransactionV1, Transaction> for Wayluck {
         let change = match request {
             Request::Destroy => return,
             Request::Place {
+                scene,
                 window,
                 x,
                 y,
@@ -219,7 +278,18 @@ impl Dispatch<WayluckWmTransactionV1, Transaction> for Wayluck {
                 height,
             } => {
                 let rect = Rectangle::new((x, y).into(), (width, height).into());
-                Some(Change::Place(id_of(&window), rect))
+                Some(Change::Place(scene_of(&scene), id_of(&window), rect))
+            }
+            Request::SceneSize {
+                scene,
+                width,
+                height,
+            } => Some(Change::SceneSize(scene_of(&scene), (width, height).into())),
+            Request::Show { output, scene } => {
+                let Some(output) = output.data::<Output>().cloned() else {
+                    return;
+                };
+                Some(Change::Show(output, scene.as_ref().map(scene_of)))
             }
             Request::Border {
                 window,
@@ -273,6 +343,10 @@ fn id_of(window: &WayluckWmWindowV1) -> WindowId {
     *window
         .data::<WindowId>()
         .expect("window objects are made with their id")
+}
+
+fn scene_of(scene: &WayluckWmSceneV1) -> SceneId {
+    *scene.data::<SceneId>().unwrap()
 }
 
 /// A key combination the window manager has taken.
@@ -416,10 +490,13 @@ impl Wayluck {
 
     /// A window manager was just accepted: every output, every window, then ready.
     fn wm_announce_all(&mut self) {
-        let outputs: Vec<Output> = self.space.outputs().cloned().collect();
+        let outputs: Vec<Output> = self.monitors().cloned().collect();
         for output in outputs {
             self.wm_output_added(&output);
         }
+        // Nothing is shown until it says what (its first transaction).
+        self.scenes.show_nothing();
+        self.sync_space();
         // Windows that have committed; the rest are announced at their first commit.
         let ids: Vec<WindowId> = self
             .windows
@@ -590,6 +667,20 @@ impl Wayluck {
         true
     }
 
+    /// Something started capturing output, or everything stopped: the
+    /// window manager hears.
+    pub fn wm_capture(&self, output: &Output, started: bool) {
+        for (o, resource) in &self.wm.outputs {
+            if o == output {
+                if started {
+                    resource.capture_started();
+                } else {
+                    resource.capture_stopped();
+                }
+            }
+        }
+    }
+
     /// A window is gone: the window manager hears so, and should destroy it.
     pub fn wm_window_closed(&mut self, id: WindowId) {
         if let Some(resource) = self.wm.windows.remove(&id) {
@@ -628,9 +719,11 @@ impl Dispatch<WayluckWmOutputV1, Output> for Wayluck {
         state: &mut Self,
         _client: ClientId,
         resource: &WayluckWmOutputV1,
-        _data: &Output,
+        output: &Output,
     ) {
         state.wm.outputs.retain(|(_, r)| r != resource);
+        // A virtual output goes with it (a monitor stays).
+        state.remove_virtual_output(output);
     }
 }
 

@@ -1,7 +1,7 @@
 //! Running nested, as a window in another session: for development. The
 //! window is wayluck's one output.
 
-use crate::{Wayluck, render, screencopy};
+use crate::{Wayluck, image_capture, render, screencopy};
 use smithay::{
     backend::{
         egl::EGLDevice,
@@ -112,7 +112,6 @@ pub fn init(
                     Err(e) => return tracing::warn!("binding the window: {e}"),
                 };
 
-                let changed = matches!(rendered, Ok(Some(_)));
                 match rendered {
                     // Nothing changed after all: nothing to show.
                     Ok(None) => {}
@@ -124,7 +123,8 @@ pub fn init(
                     Err(e) => tracing::warn!("rendering: {e}"),
                 }
                 // Screenshots and screen sharing waiting for this frame.
-                screencopy::capture(state, &output, backend.renderer(), changed);
+                screencopy::capture_virtual(state, backend.renderer());
+                image_capture::capture_frames(state, backend.renderer());
                 // Clients waiting to draw again may now (no more frames are
                 // asked for: the next comes when something changes).
                 render::frame_done(state, &output);

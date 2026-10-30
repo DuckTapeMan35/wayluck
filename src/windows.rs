@@ -3,16 +3,19 @@
 //! in the surface's own data).
 
 use crate::{
-    Wayluck, layers, protocol::wayluck_wm_transaction_v1::WayluckWmTransactionV1, render::Border,
+    Wayluck, image_capture, layers,
+    protocol::wayluck_wm_transaction_v1::WayluckWmTransactionV1,
+    render::Border,
+    scenes::{self, SceneId},
 };
 use smithay::{
-    desktop::{Space, Window},
+    desktop::Window,
     output::Output,
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::protocol::wl_surface::WlSurface,
     },
-    utils::{Logical, Rectangle, SERIAL_COUNTER, Serial},
+    utils::{Logical, Rectangle, SERIAL_COUNTER, Serial, Size},
     wayland::{
         compositor::{add_pre_commit_hook, with_states},
         shell::xdg::{ToplevelStateSet, ToplevelSurface, XdgToplevelSurfaceData},
@@ -115,12 +118,9 @@ impl Windows {
         self.by_id.keys().copied()
     }
 
-    /// Is a fullscreen window shown on output?
-    pub fn fullscreen_on(&self, space: &Space<Window>, output: &Output) -> bool {
-        self.fullscreen
-            .iter()
-            .filter_map(|id| self.by_id.get(id))
-            .any(|w| space.outputs_for_element(w).contains(output))
+    /// Did the window manager make it fullscreen?
+    pub fn is_fullscreen(&self, id: WindowId) -> bool {
+        self.fullscreen.contains(&id)
     }
 }
 
@@ -143,9 +143,13 @@ pub fn names(toplevel: &ToplevelSurface) -> Names {
 /// One change to what's shown.
 pub enum Change {
     /// Show a window at a rectangle, asking its client for that size.
-    Place(WindowId, Rectangle<i32, Logical>),
+    Place(SceneId, WindowId, Rectangle<i32, Logical>),
     /// Stop showing a window.
     Hide(WindowId),
+    /// What an output shows: a scene, or nothing.
+    Show(Output, Option<SceneId>),
+    /// The size a scene is laid out for.
+    SceneSize(SceneId, Size<i32, Logical>),
     /// Give a window the keyboard (None: no window has it).
     Focus(Option<WindowId>),
     /// Draw a border around a window: its width, and its colours (0xAARRGGBB;
@@ -162,7 +166,6 @@ impl Wayluck {
     /// it (which hears of it at its first commit, handlers/xdg_shell.rs).
     /// With no window manager, shown a step down and right of the last one.
     pub fn add_window(&mut self, window: Window) -> WindowId {
-        let step = 40 * self.windows.len() as i32;
         let id = self.windows.insert(window.clone());
         // Its redraws may be held back for a transaction (atomic.rs).
         if let Some(toplevel) = window.toplevel() {
@@ -171,7 +174,9 @@ impl Wayluck {
             });
         }
         if self.wm.manager.is_none() {
-            self.space.map_element(window, (step, step), true);
+            let at = scenes::cascade(self.windows.len() - 1);
+            self.scenes.place(self.own_scene, id, at);
+            self.sync_space();
         }
         id
     }
@@ -186,19 +191,28 @@ impl Wayluck {
     ) -> Result<(), &'static str> {
         // Check everything first, so nothing is half done.
         for change in &changes {
+            let scene = match change {
+                Change::Place(scene, ..)
+                | Change::SceneSize(scene, _)
+                | Change::Show(_, Some(scene)) => Some(*scene),
+                _ => None,
+            };
+            if scene.is_some_and(|s| !self.scenes.exists(s)) {
+                return Err("a scene in it is gone");
+            }
             let id = match change {
-                Change::Place(id, _)
+                Change::Place(_, id, _)
                 | Change::Hide(id)
                 | Change::Focus(Some(id))
                 | Change::Border(id, _, _)
                 | Change::Fullscreen(id, _)
                 | Change::Tiled(id, _) => *id,
-                Change::Focus(None) => continue,
+                Change::Focus(None) | Change::Show(..) | Change::SceneSize(..) => continue,
             };
             if self.windows.get(id).is_none() {
                 return Err("a window in it is gone");
             }
-            if let Change::Place(_, rect) = change
+            if let Change::Place(_, _, rect) = change
                 && (rect.size.w <= 0 || rect.size.h <= 0)
             {
                 return Err("a size isn't positive");
@@ -211,7 +225,7 @@ impl Wayluck {
         let mut resized = Vec::new();
         for change in &changes {
             match *change {
-                Change::Place(id, rect) => {
+                Change::Place(_, id, rect) => {
                     let toplevel = self.windows.get(id).unwrap().toplevel().unwrap();
                     let before = toplevel.with_pending_state(|s| s.size.replace(rect.size));
                     // A window not configured yet has nothing on screen to keep.
@@ -237,7 +251,10 @@ impl Wayluck {
                         }
                     });
                 }
-                Change::Focus(_) | Change::Border(..) => {}
+                Change::Focus(_)
+                | Change::Border(..)
+                | Change::Show(..)
+                | Change::SceneSize(..) => {}
             }
         }
         let serials = self.send_configures();
@@ -284,22 +301,29 @@ impl Wayluck {
         sent
     }
 
-    /// The part of a transaction that's seen: where windows are, which are
-    /// hidden, focus and borders. A window closed meanwhile is skipped.
+    /// The part of a transaction that's seen: which scene windows are in,
+    /// what outputs show, focus and borders. A window closed meanwhile is
+    /// skipped.
     pub fn show(&mut self, changes: Vec<Change>) {
-        self.queue_redraw();
+        // Where things are first: focus and borders then apply to windows
+        // where they are now.
+        for change in &changes {
+            match *change {
+                Change::Place(scene, id, rect) => {
+                    if self.windows.get(id).is_some() {
+                        self.scenes.place(scene, id, rect.loc);
+                    }
+                }
+                Change::Hide(id) => self.scenes.take_out(id),
+                Change::Show(ref output, scene) => self.scenes.show(output, scene),
+                Change::SceneSize(scene, size) => self.scenes.set_size(scene, size),
+                _ => {}
+            }
+        }
+        self.sync_space();
         for change in changes {
             match change {
-                Change::Place(id, rect) => {
-                    if let Some(window) = self.windows.get(id).cloned() {
-                        self.space.map_element(window, rect.loc, false);
-                    }
-                }
-                Change::Hide(id) => {
-                    if let Some(window) = self.windows.get(id).cloned() {
-                        self.space.unmap_elem(&window);
-                    }
-                }
+                Change::Place(..) | Change::Hide(_) | Change::Show(..) | Change::SceneSize(..) => {}
                 Change::Focus(id) => self.focus(id.filter(|id| self.windows.get(*id).is_some())),
                 Change::Border(id, width, colors) => {
                     if self.windows.get(id).is_some() {
@@ -365,6 +389,9 @@ impl Wayluck {
 
     /// A window's client closed it, or went away.
     pub fn remove_window(&mut self, id: WindowId) {
+        self.scenes.take_out(id);
+        self.unlist_window(id);
+        self.stop_capture_sessions(&image_capture::Source::Window(id));
         if let Some(window) = self.windows.remove(id) {
             self.space.unmap_elem(&window);
             self.queue_redraw();

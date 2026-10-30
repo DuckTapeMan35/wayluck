@@ -59,7 +59,9 @@ impl Wayluck {
 
     /// The layers on one side of the windows on output, front first.
     pub fn layers(&self, output: &Output, side: Side) -> &'static [Layer] {
-        let fullscreen = self.windows.fullscreen_on(&self.space, output);
+        // A fullscreen window in the scene it shows.
+        let fullscreen = (self.scenes.shown_on(output))
+            .is_some_and(|s| s.windows().any(|(id, _)| self.windows.is_fullscreen(id)));
         match (side, fullscreen) {
             (Side::Above, false) => &ABOVE,
             (Side::Below, false) => &BELOW,

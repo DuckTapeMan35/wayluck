@@ -19,6 +19,7 @@ use smithay::{
     },
     output::Output,
     reexports::{
+        calloop::timer::{TimeoutAction, Timer},
         wayland_protocols_wlr::screencopy::v1::server::{
             zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
             zwlr_screencopy_manager_v1::{self, ZwlrScreencopyManagerV1},
@@ -31,9 +32,16 @@ use smithay::{
     utils::{Buffer, Clock, Monotonic, Physical, Rectangle, Size, Transform},
     wayland::shm::{with_buffer_contents, with_buffer_contents_mut},
 };
-use std::{sync::Mutex, time::Duration};
+use std::{
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 
 const VERSION: u32 = 3;
+
+/// How long without a frame asked for (and none waiting) before an output
+/// counts as no longer captured.
+const CAPTURE_GONE: Duration = Duration::from_secs(1);
 
 /// A frame a client asked for: of which output, which part (in its
 /// pixels), and whether with the cursor.
@@ -51,12 +59,6 @@ pub struct Copy {
     buffer: WlBuffer,
     /// Only once something changed (copy_with_damage).
     with_damage: bool,
-}
-
-impl Wayluck {
-    pub fn screencopy_global(dh: &DisplayHandle) {
-        dh.create_global::<Wayluck, ZwlrScreencopyManagerV1, _>(VERSION, ());
-    }
 }
 
 impl GlobalDispatch<ZwlrScreencopyManagerV1, ()> for Wayluck {
@@ -174,6 +176,7 @@ impl Dispatch<ZwlrScreencopyFrameV1, Option<FrameData>> for Wayluck {
             buffer,
             with_damage,
         });
+        state.capture_activity(&data.output);
         // A plain copy doesn't wait for something to change.
         if !with_damage {
             state.queue_redraw();
@@ -200,7 +203,7 @@ fn region_of(
 
 /// Is buffer the one a frame of size asked for: shared memory, XRGB8888,
 /// that size, rows of 4 bytes a pixel?
-fn fits(buffer: &WlBuffer, size: Size<i32, Physical>) -> bool {
+pub fn fits(buffer: &WlBuffer, size: Size<i32, Physical>) -> bool {
     with_buffer_contents(buffer, |_, _, b| {
         b.format == wl_shm::Format::Xrgb8888
             && b.width == size.w
@@ -218,10 +221,7 @@ where
     R::TextureId: Clone + Texture + Send + 'static,
     R::Error: 'static,
 {
-    let mine = |c: &Copy| {
-        let data = c.frame.data::<Option<FrameData>>().and_then(Option::as_ref);
-        data.is_some_and(|d| &d.output == output) && (changed || !c.with_damage)
-    };
+    let mine = |c: &Copy| c.is_of(output) && (changed || !c.with_damage);
     let (now, later) = std::mem::take(&mut state.screencopies)
         .into_iter()
         .partition(mine);
@@ -239,7 +239,12 @@ where
             .iter()
             .filter(|e| data.cursor || !matches!(e, Element::Cursor(_)))
             .collect();
-        match copy_into(renderer, output, &drawn, data.region, &copy.buffer) {
+        let Some(size) = output.current_mode().map(|m| m.size) else {
+            copy.frame.failed();
+            continue;
+        };
+        let scale = output.current_scale().fractional_scale();
+        match copy_into(renderer, size, scale, &drawn, data.region, &copy.buffer) {
             Ok(()) => {
                 copy.frame.flags(zwlr_screencopy_frame_v1::Flags::empty());
                 if copy.with_damage {
@@ -259,11 +264,115 @@ where
     }
 }
 
-/// Draw elements offscreen at output's size, and copy region of it into
-/// buffer (shared memory).
-fn copy_into<R>(
+/// After a frame was drawn (on any output): copies of virtual outputs. A
+/// virtual output is drawn for nothing else (virtual_output.rs); for
+/// copy_with_damage, only once something in it changed since its last.
+pub fn capture_virtual<R>(state: &mut Wayluck, renderer: &mut R)
+where
+    R: Renderer + ImportAll + ImportMem + Offscreen<GlesRenderbuffer> + ExportMem,
+    R::TextureId: Clone + Texture + Send + 'static,
+    R::Error: 'static,
+{
+    let wanted: Vec<Output> = (state.virtuals.iter())
+        .map(|v| v.output.clone())
+        .filter(|o| state.screencopies.iter().any(|c| c.is_of(o)))
+        .collect();
+    for output in wanted {
+        let elements = render::elements(state, &output, renderer);
+        let Some(v) = state.virtuals.iter_mut().find(|v| v.output == output) else {
+            continue;
+        };
+        let changed =
+            matches!(v.damage.damage_output(1, &elements), Ok((Some(d), _)) if !d.is_empty());
+        capture(state, &output, renderer, changed);
+    }
+}
+
+impl Copy {
+    /// Is it a copy of output?
+    fn is_of(&self, output: &Output) -> bool {
+        let data = self
+            .frame
+            .data::<Option<FrameData>>()
+            .and_then(Option::as_ref);
+        data.is_some_and(|d| &d.output == output)
+    }
+}
+
+impl Wayluck {
+    /// A frame of output was asked for: if nothing was capturing it, the
+    /// window manager hears it is now, and a virtual output's windows are
+    /// paced (virtual_output.rs). Captures are watched for stopping.
+    pub fn capture_activity(&mut self, output: &Output) {
+        let now = Instant::now();
+        if let Some((_, last)) = self.captures.iter_mut().find(|(o, _)| o == output) {
+            *last = now;
+            return;
+        }
+        if self.captures.is_empty() {
+            // Every quarter of a second, while anything is captured.
+            let every = Duration::from_millis(250);
+            let watch =
+                self.loop_handle
+                    .insert_source(Timer::from_duration(every), move |_, _, state| {
+                        state.captures_stopped();
+                        if state.captures.is_empty() {
+                            TimeoutAction::Drop
+                        } else {
+                            TimeoutAction::ToDuration(every)
+                        }
+                    });
+            if let Err(e) = watch {
+                tracing::warn!("can't watch captures: {e}");
+            }
+        }
+        self.captures.push((output.clone(), now));
+        tracing::debug!("{}: captured", output.name());
+        self.wm_capture(output, true);
+        self.start_pacing(output);
+    }
+
+    pub fn screencopy_global(dh: &DisplayHandle) {
+        dh.create_global::<Wayluck, ZwlrScreencopyManagerV1, _>(VERSION, ());
+    }
+
+    /// Outputs no frame was asked for in CAPTURE_GONE, with none waiting:
+    /// not captured any more.
+    fn captures_stopped(&mut self) {
+        let now = Instant::now();
+        let captures = std::mem::take(&mut self.captures);
+        // A frame waiting for something to change: still capturing.
+        let waiting = |o: &Output| {
+            self.screencopies.iter().any(|c| c.is_of(o)) || self.image_frames_waiting(o)
+        };
+        let (stopped, still): (Vec<_>, Vec<_>) =
+            (captures.into_iter()).partition(|(o, last)| now - *last > CAPTURE_GONE && !waiting(o));
+        self.captures = still;
+        for (output, _) in stopped {
+            tracing::debug!("{}: not captured", output.name());
+            self.wm_capture(&output, false);
+            self.stop_pacing(&output);
+        }
+    }
+
+    /// output is gone: the copies waiting for it fail.
+    pub fn fail_screencopies(&mut self, output: &Output) {
+        let (gone, kept) = std::mem::take(&mut self.screencopies)
+            .into_iter()
+            .partition(|c: &Copy| c.is_of(output));
+        self.screencopies = kept;
+        for copy in gone {
+            copy.frame.failed();
+        }
+    }
+}
+
+/// Draw elements offscreen in a picture of size (at scale),
+/// and copy region of it into buffer (shared memory). Also for ext-image-copy-capture.
+pub fn copy_into<R>(
     renderer: &mut R,
-    output: &Output,
+    size: Size<i32, Physical>,
+    scale: f64,
     elements: &[&Element<R>],
     region: Rectangle<i32, Physical>,
     buffer: &WlBuffer,
@@ -273,8 +382,6 @@ where
     R::TextureId: Clone + Texture + Send + 'static,
     R::Error: 'static,
 {
-    let size = output.current_mode().ok_or("no mode")?.size;
-    let scale = output.current_scale().fractional_scale();
     let mut target: GlesRenderbuffer = renderer.create_buffer(
         Fourcc::Xrgb8888,
         size.to_logical(1).to_buffer(1, Transform::Normal),

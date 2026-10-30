@@ -36,12 +36,14 @@ impl XdgShellHandler for Wayluck {
     fn title_changed(&mut self, surface: ToplevelSurface) {
         if let Some(id) = Windows::id_of(surface.wl_surface()) {
             self.wm_window_title(id);
+            self.list_names_changed(id);
         }
     }
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
         if let Some(id) = Windows::id_of(surface.wl_surface()) {
             self.wm_window_app_id(id);
+            self.list_names_changed(id);
         }
     }
 
@@ -106,10 +108,12 @@ pub fn handle_commit(state: &mut Wayluck, surface: &WlSurface) {
     window.on_commit();
     // Size limits are set with a commit: the window manager hears changes.
     state.wm_size_hints(id);
-    let toplevel = window.toplevel().unwrap();
+    let toplevel = window.toplevel().unwrap().clone();
     if toplevel.is_initial_configure_sent() {
         return;
     }
+    // Its first commit: clients listing windows hear of it (toplevel_list.rs).
+    state.list_window(id);
     // A window manager decides where it goes first, so the first configure
     // has its size (Wayluck::apply sends it then).
     if state.wm.manager.is_some() && !state.windows.decided(id) {
@@ -119,7 +123,7 @@ pub fn handle_commit(state: &mut Wayluck, surface: &WlSurface) {
         state.wm_window_added(id);
         return;
     }
-    tracing::info!("configuring {}", title_of(toplevel));
+    tracing::info!("configuring {}", title_of(&toplevel));
     toplevel.send_configure();
 }
 

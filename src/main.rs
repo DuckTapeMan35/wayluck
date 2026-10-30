@@ -3,14 +3,19 @@
 mod atomic;
 mod cursor;
 mod handlers;
+mod image_capture;
 mod input;
 mod layers;
+mod picker;
 mod popups;
 mod protocol;
 mod render;
+mod scenes;
 mod screencopy;
 mod state;
+mod toplevel_list;
 mod udev;
+mod virtual_output;
 mod windows;
 mod winit;
 mod wm;
@@ -26,6 +31,12 @@ pub use state::Wayluck;
 use std::{ffi::OsStr, path::PathBuf, process::Command, time::Duration};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // `wayluck pick`: not a compositor, a client asking the running one what
+    // to share (picker.rs).
+    if std::env::args().nth(1).as_deref() == Some("pick") {
+        std::process::exit(picker::run_pick());
+    }
+
     // Logs to stderr: stdout is the programs' it runs.
     let logs = tracing_subscriber::fmt().with_writer(std::io::stderr);
     match tracing_subscriber::EnvFilter::try_from_default_env() {
@@ -36,6 +47,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut event_loop: EventLoop<Wayluck> = EventLoop::try_new()?;
     let display: Display<Wayluck> = Display::new()?;
     let mut state = Wayluck::new(&mut event_loop, display);
+    // Until a window manager comes: wayluck's own scene.
+    state.show_own_scene();
     tracing::info!("listening on {}", state.socket_name.to_string_lossy());
 
     let args = Args::parse()?;

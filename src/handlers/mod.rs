@@ -1,5 +1,6 @@
 //! smithay's per-protocol handlers.
 
+mod clipboard;
 mod compositor;
 mod decoration;
 mod dmabuf;
@@ -21,6 +22,7 @@ use smithay::{
                 ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
                 set_data_device_focus,
             },
+            primary_selection::set_primary_focus,
         },
     },
 };
@@ -46,12 +48,14 @@ impl SeatHandler for Wayluck {
         }
     }
 
-    /// The clipboard follows keyboard focus: only the focused client may
-    /// read it (or set it).
+    /// The clipboard and the primary selection follow keyboard focus: only
+    /// the focused client may read them (or set them). Clipboard tools don't
+    /// need it (clipboard.rs).
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let dh = &self.display_handle;
         let client = focused.and_then(|s| dh.get_client(s.id()).ok());
-        set_data_device_focus(dh, seat, client);
+        set_data_device_focus(dh, seat, client.clone());
+        set_primary_focus(dh, seat, client);
     }
 }
 delegate_seat!(Wayluck);

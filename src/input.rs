@@ -217,10 +217,10 @@ impl Wayluck {
             // The window manager decides about focus; without one, what was
             // clicked is raised and gets it (nothing, on the background).
             if self.wm.manager.is_none() {
-                if let Some(w) = clicked.and_then(|id| self.windows.get(id)).cloned() {
-                    self.space.raise_element(&w, false);
+                if let Some(id) = clicked {
+                    self.scenes.raise(id);
+                    self.sync_space();
                 }
-                self.focus(clicked);
             } else if let Some(id) = clicked {
                 self.wm_focus_request(id);
             }

@@ -41,9 +41,9 @@ impl WlrLayerShellHandler for Wayluck {
         let output = output
             .as_ref()
             .and_then(Output::from_resource)
-            .or_else(|| self.space.outputs().next().cloned());
-        let Some(output) = output else {
-            tracing::warn!("{namespace:?}: no output to put it on");
+            .or_else(|| self.monitors().next().cloned());
+        let Some(output) = output.filter(|o| !self.is_virtual(o)) else {
+            tracing::info!("{namespace:?}: not on a virtual output, or no output");
             surface.send_close();
             return;
         };
