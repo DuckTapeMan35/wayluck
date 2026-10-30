@@ -16,7 +16,7 @@ use smithay::{
             PointerButtonEvent,
         },
         renderer::{
-            Color32F, Frame, ImportMem, Renderer, Texture,
+            Color32F, Frame, ImportDma, ImportMem, Renderer, Texture,
             gles::{GlesError, GlesFrame, GlesRenderer, GlesTexture},
         },
         winit::{self, WinitEvent, WinitGraphicsBackend},
@@ -238,23 +238,28 @@ impl Picker {
                 continue;
             };
             let renderer = self.backend.renderer();
-            let Image {
-                width,
-                height,
-                pixels,
-            } = image;
-            // The same size as the last: into the same texture.
             let texture = &mut self.thumbnails[at];
-            match texture {
-                Some(t) if (t.width() as i32, t.height() as i32) == (width, height) => {
-                    let all = Rectangle::from_size((width, height).into());
-                    renderer.update_memory(t, &pixels, all)?;
-                }
-                _ => {
-                    let size = (width, height).into();
-                    *texture =
-                        Some(renderer.import_memory(&pixels, Fourcc::Xrgb8888, size, false)?);
-                }
+            match image {
+                // On the GPU already: the renderer only has to see it as a
+                // texture (it remembers dmabufs it has seen).
+                Image::Dmabuf(dmabuf) => *texture = Some(renderer.import_dmabuf(&dmabuf, None)?),
+                Image::Pixels {
+                    width,
+                    height,
+                    pixels,
+                } => match texture {
+                    // The same size as the last: into the same texture.
+                    Some(t) if (t.width() as i32, t.height() as i32) == (width, height) => {
+                        let all = Rectangle::from_size((width, height).into());
+                        renderer.update_memory(t, &pixels, all)?;
+                    }
+                    _ => {
+                        let size = (width, height).into();
+                        let imported =
+                            renderer.import_memory(&pixels, Fourcc::Xrgb8888, size, false)?;
+                        *texture = Some(imported);
+                    }
+                },
             }
         }
         Ok(())

@@ -1,8 +1,21 @@
 //! Live thumbnails: each monitor captured (ext-image-copy-capture), frame
-//! after frame, over a connection of the picker's own. A frame comes into
-//! shared memory; the next is asked for once the last was drawn (next), so
-//! frames come no faster than the picker shows them.
+//! after frame, over a connection of the picker's own. A frame comes into a
+//! dmabuf on wayluck's GPU when it offers one (the picker draws it from
+//! there: nothing is copied), else into shared memory. The next is asked for
+//! once the last was drawn (next), so frames come no faster than the picker
+//! shows them.
 
+use smithay::{
+    backend::{
+        allocator::{
+            Allocator, Buffer as _, Fourcc, Modifier,
+            dmabuf::{AsDmabuf, Dmabuf},
+            gbm::{GbmAllocator, GbmBufferFlags, GbmDevice},
+        },
+        drm::{DrmNode, NodeType},
+    },
+    reexports::rustix::fs::{MemfdFlags, memfd_create},
+};
 use std::{
     fs::File,
     os::{
@@ -10,8 +23,6 @@ use std::{
         unix::fs::FileExt,
     },
 };
-
-use smithay::reexports::rustix::fs::{MemfdFlags, memfd_create};
 use wayland_client::{
     Connection, Dispatch, EventQueue, QueueHandle,
     globals::{GlobalListContents, registry_queue_init},
@@ -34,10 +45,18 @@ use wayland_protocols::ext::{
         ext_image_copy_capture_session_v1::{self, ExtImageCopyCaptureSessionV1},
     },
 };
+use wayland_protocols::wp::linux_dmabuf::zv1::client::{
+    zwp_linux_buffer_params_v1::{self, ZwpLinuxBufferParamsV1},
+    zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1,
+};
 
 pub struct Captures {
     connection: Connection,
     shm: WlShm,
+    /// To hand dmabufs over, if wayluck takes them.
+    linux_dmabuf: Option<ZwpLinuxDmabufV1>,
+    /// The GPU dmabufs are made on, once a session says which.
+    gpu: Option<(u64, GbmAllocator<File>)>,
     /// One for each monitor asked for, in the order asked.
     pub thumbnails: Vec<Thumbnail>,
     /// The monitors' wl_outputs, and their names once told.
@@ -51,26 +70,40 @@ pub struct Thumbnail {
     session: Option<ExtImageCopyCaptureSessionV1>,
     /// The size the session asks for (as it says, then done).
     asked: (i32, i32),
-    buffer: Option<Shm>,
+    /// The GPU it may take a dmabuf on, and the modifiers it takes for
+    /// XRGB8888 (as it says, then done; none: only shared memory).
+    asked_dmabuf: Option<(u64, Vec<Modifier>)>,
+    buffer: Option<Buffer>,
     /// The frame being captured, if one is.
     frame: Option<ExtImageCopyCaptureFrameV1>,
     /// The newest frame, until the picker takes it to draw.
     pub image: Option<Image>,
 }
 
-/// A frame's pixels: XRGB8888, rows of width * 4 bytes.
-pub struct Image {
-    pub width: i32,
-    pub height: i32,
-    pub pixels: Vec<u8>,
+/// A frame, to draw.
+pub enum Image {
+    /// Copied out of shared memory: XRGB8888, rows of width * 4 bytes.
+    Pixels {
+        width: i32,
+        height: i32,
+        pixels: Vec<u8>,
+    },
+    /// Drawn into this dmabuf, on the GPU.
+    Dmabuf(Dmabuf),
 }
 
-/// A buffer in shared memory: the client's side of it is a file.
-struct Shm {
+/// What a thumbnail's frames are captured into.
+struct Buffer {
     buffer: WlBuffer,
-    file: File,
     width: i32,
     height: i32,
+    memory: Memory,
+}
+
+enum Memory {
+    /// Shared memory: the client's side of it is a file.
+    Shm(File),
+    Dmabuf(Dmabuf),
 }
 
 impl Captures {
@@ -81,10 +114,14 @@ impl Captures {
     ) -> Result<(Captures, EventQueue<Captures>), Box<dyn std::error::Error>> {
         let connection = Connection::connect_to_env()?;
         let (globals, mut queue) = registry_queue_init::<Captures>(&connection)?;
+
         let qh = queue.handle();
+
         let shm: WlShm = globals.bind(&qh, 1..=1, ())?;
         let sources: ExtOutputImageCaptureSourceManagerV1 = globals.bind(&qh, 1..=1, ())?;
         let copier: ExtImageCopyCaptureManagerV1 = globals.bind(&qh, 1..=1, ())?;
+        // Version 3: buffers made at once (create_immed).
+        let linux_dmabuf = globals.bind(&qh, 3..=3, ()).ok();
         // Every output, by name (wl_output 4 says it).
         let outputs = (globals.contents().clone_list().into_iter())
             .filter(|g| g.interface == "wl_output" && g.version >= 4)
@@ -94,9 +131,12 @@ impl Captures {
                 (output, None)
             })
             .collect();
+
         let mut captures = Captures {
             connection,
             shm,
+            linux_dmabuf,
+            gpu: None,
             thumbnails: Vec::new(),
             outputs,
             fresh: false,
@@ -142,19 +182,28 @@ impl Captures {
         if width <= 0 || height <= 0 {
             return; // not told the size yet
         }
-        let t = &mut self.thumbnails[at];
-        if t.buffer
-            .as_ref()
-            .is_none_or(|b| (b.width, b.height) != (width, height))
-        {
-            if let Some(old) = t.buffer.take() {
+        let fits = (self.thumbnails[at].buffer.as_ref())
+            .is_some_and(|b| (b.width, b.height) == (width, height));
+        if !fits {
+            if let Some(old) = self.thumbnails[at].buffer.take() {
                 old.buffer.destroy();
             }
-            match shm_buffer(&self.shm, width, height, qh) {
-                Ok(buffer) => t.buffer = Some(buffer),
+            // A dmabuf if wayluck takes one and one can be made; shared
+            // memory if not.
+            let buffer = match self.dmabuf_buffer(at, qh) {
+                Some(Ok(buffer)) => Ok(buffer),
+                Some(Err(e)) => {
+                    eprintln!("wayluck pick: no dmabuf for a thumbnail ({e}): shared memory");
+                    shm_buffer(&self.shm, width, height, qh)
+                }
+                None => shm_buffer(&self.shm, width, height, qh),
+            };
+            match buffer {
+                Ok(buffer) => self.thumbnails[at].buffer = Some(buffer),
                 Err(e) => return eprintln!("wayluck pick: a thumbnail's buffer: {e}"),
             }
         }
+        let t = &mut self.thumbnails[at];
         let Some(buffer) = &t.buffer else { return };
         let frame = session.create_frame(qh, at);
         frame.attach_buffer(&buffer.buffer);
@@ -162,6 +211,64 @@ impl Captures {
         frame.capture();
         t.frame = Some(frame);
     }
+
+    /// A dmabuf of the size thumbnail at asks for, on the GPU it says;
+    /// None if it takes none (or wayluck can't be handed one).
+    fn dmabuf_buffer(
+        &mut self,
+        at: usize,
+        qh: &QueueHandle<Captures>,
+    ) -> Option<Result<Buffer, Box<dyn std::error::Error>>> {
+        let t = &self.thumbnails[at];
+        let (device, modifiers) = t.asked_dmabuf.clone()?;
+        let (width, height) = t.asked;
+        let linux_dmabuf = self.linux_dmabuf.as_ref()?;
+        let made = (|| {
+            if self.gpu.as_ref().is_none_or(|(d, _)| *d != device) {
+                self.gpu = Some((device, open_gpu(device)?));
+            }
+            let (_, allocator) = self.gpu.as_mut().ok_or("no GPU")?;
+            let gbm = allocator.create_buffer(
+                width as u32,
+                height as u32,
+                Fourcc::Xrgb8888,
+                &modifiers,
+            )?;
+            let dmabuf = gbm.export()?;
+            // Handed over: each plane, then the buffer made of them.
+            let params = linux_dmabuf.create_params(qh, ());
+            let modifier = u64::from(dmabuf.format().modifier);
+            let planes = (dmabuf.handles())
+                .zip(dmabuf.offsets())
+                .zip(dmabuf.strides())
+                .enumerate();
+            for (plane, ((fd, offset), stride)) in planes {
+                let (hi, lo) = ((modifier >> 32) as u32, modifier as u32);
+                params.add(fd, plane as u32, offset, stride, hi, lo);
+            }
+            let flags = zwp_linux_buffer_params_v1::Flags::empty();
+            let format = Fourcc::Xrgb8888 as u32;
+            let buffer = params.create_immed(width, height, format, flags, qh, ());
+            params.destroy();
+            Ok(Buffer {
+                buffer,
+                width,
+                height,
+                memory: Memory::Dmabuf(dmabuf),
+            })
+        })();
+        Some(made)
+    }
+}
+
+/// The GPU a session named (by its device number), to make dmabufs on: its
+/// render node.
+fn open_gpu(device: u64) -> Result<GbmAllocator<File>, Box<dyn std::error::Error>> {
+    let node = DrmNode::from_dev_id(device)?;
+    let path = (node.dev_path_with_type(NodeType::Render)).ok_or("the GPU has no render node")?;
+    let file = File::options().read(true).write(true).open(path)?;
+    let device = GbmDevice::new(file)?;
+    Ok(GbmAllocator::new(device, GbmBufferFlags::RENDERING))
 }
 
 /// A buffer of width × height XRGB8888 pixels in a new memfd.
@@ -170,7 +277,7 @@ fn shm_buffer(
     width: i32,
     height: i32,
     qh: &QueueHandle<Captures>,
-) -> Result<Shm, Box<dyn std::error::Error>> {
+) -> Result<Buffer, Box<dyn std::error::Error>> {
     let stride = width * 4;
     let len = stride * height;
     let fd: OwnedFd = memfd_create("wayluck-pick", MemfdFlags::CLOEXEC)?;
@@ -179,11 +286,11 @@ fn shm_buffer(
     let pool: WlShmPool = shm.create_pool(file.as_fd(), len, qh, ());
     let buffer = pool.create_buffer(0, width, height, stride, wl_shm::Format::Xrgb8888, qh, ());
     pool.destroy();
-    Ok(Shm {
+    Ok(Buffer {
         buffer,
-        file,
         width,
         height,
+        memory: Memory::Shm(file),
     })
 }
 
@@ -199,7 +306,26 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, usize> for Captures {
         use ext_image_copy_capture_session_v1::Event;
         let t = &mut captures.thumbnails[*at];
         match event {
-            Event::BufferSize { width, height } => t.asked = (width as i32, height as i32),
+            // What to give, again from the start (the size comes first).
+            Event::BufferSize { width, height } => {
+                t.asked = (width as i32, height as i32);
+                t.asked_dmabuf = None;
+            }
+            Event::DmabufDevice { device } => {
+                let device = device.try_into().map(u64::from_ne_bytes);
+                if let Ok(device) = device {
+                    t.asked_dmabuf = Some((device, Vec::new()));
+                }
+            }
+            Event::DmabufFormat { format, modifiers } => {
+                if format == Fourcc::Xrgb8888 as u32
+                    && let Some((_, taken)) = &mut t.asked_dmabuf
+                {
+                    // Whole 8-byte modifiers (a stray end, if any, is dropped).
+                    let (each, _) = modifiers.as_chunks::<8>();
+                    taken.extend(each.iter().map(|m| Modifier::from(u64::from_ne_bytes(*m))));
+                }
+            }
             // Told all of what to give: the first frame (or the next, at the
             // new size, if one failed for the old).
             Event::Done => {
@@ -212,7 +338,7 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, usize> for Captures {
                     session.destroy();
                 }
             }
-            // Shared memory is what it's given: no need to know the rest.
+            // XRGB8888 is what it's given, in shared memory or a dmabuf.
             _ => {}
         }
     }
@@ -231,17 +357,21 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, usize> for Captures {
         let t = &mut captures.thumbnails[*at];
         match event {
             Event::Ready => {
-                frame.destroy();
-                t.frame = None;
-                let Some(shm) = &t.buffer else { return };
-                let mut pixels = vec![0; (shm.width * shm.height * 4) as usize];
-                if let Err(e) = shm.file.read_exact_at(&mut pixels, 0) {
-                    return eprintln!("wayluck pick: reading a thumbnail: {e}");
-                }
-                t.image = Some(Image {
-                    width: shm.width,
-                    height: shm.height,
-                    pixels,
+                let Some(buffer) = &t.buffer else { return };
+                t.image = Some(match &buffer.memory {
+                    Memory::Dmabuf(dmabuf) => Image::Dmabuf(dmabuf.clone()),
+                    Memory::Shm(file) => {
+                        let (width, height) = (buffer.width, buffer.height);
+                        let mut pixels = vec![0; (width * height * 4) as usize];
+                        if let Err(e) = file.read_exact_at(&mut pixels, 0) {
+                            return eprintln!("wayluck pick: reading a thumbnail: {e}");
+                        }
+                        Image::Pixels {
+                            width,
+                            height,
+                            pixels,
+                        }
+                    }
                 });
                 captures.fresh = true;
             }
@@ -296,4 +426,6 @@ ignore! {
     ExtOutputImageCaptureSourceManagerV1, ();
     ExtImageCaptureSourceV1, ();
     ExtImageCopyCaptureManagerV1, ();
+    ZwpLinuxDmabufV1, ();
+    ZwpLinuxBufferParamsV1, ();
 }
