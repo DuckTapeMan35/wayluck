@@ -13,6 +13,7 @@ use crate::{
         wayluck_pick_v1::{self, WayluckPickV1},
         wayluck_picker_manager_v1::{self, WayluckPickerManagerV1},
     },
+    windows,
 };
 
 impl Wayluck {
@@ -20,10 +21,22 @@ impl Wayluck {
         dh.create_global::<Wayluck, WayluckPickerManagerV1, _>(1, ());
     }
 
-    /// Someone asks what can be shared: the monitors.
+    /// Someone asks what can be shared: the monitors, each followed by the
+    /// windows it shows, topmost first.
     fn pick(&mut self, pick: WayluckPickV1) {
         for monitor in self.monitors() {
             pick.monitor(monitor.name(), monitor.description());
+            let Some(scene) = self.scenes.shown_on(monitor) else {
+                continue;
+            };
+            for (id, _) in scene.windows().rev() {
+                let Some(toplevel) = self.windows.get(id).and_then(|w| w.toplevel()) else {
+                    continue;
+                };
+                let (title, app_id) = windows::names(toplevel);
+                let (title, app_id) = (title.unwrap_or_default(), app_id.unwrap_or_default());
+                pick.window(u32::from(id), title, app_id);
+            }
         }
         pick.done();
     }

@@ -42,6 +42,18 @@
       <arg name="description" type="string" summary="the wl_output's description"/>
     </event>
 
+    <event name="window">
+      <description summary="a window can be shared">
+        One of the windows shown on the monitor named last (in a monitor
+        event before it), the topmost first. id is its
+        ext-foreign-toplevel-list identifier (as a number): it's shared as
+        "Window: ID".
+      </description>
+      <arg name="id" type="uint"/>
+      <arg name="title" type="string"/>
+      <arg name="app_id" type="string"/>
+    </event>
+
     <event name="done">
       <description summary="that's all there is"/>
     </event>

@@ -15,6 +15,26 @@ pub struct Monitor {
     /// What the portal is told: the wl_output's name.
     pub name: String,
     description: String,
+    /// The windows it shows, topmost first.
+    pub windows: Vec<Window>,
+}
+
+pub struct Window {
+    /// What the portal is told: its ext-foreign-toplevel-list identifier.
+    pub id: u32,
+    title: String,
+    app_id: String,
+}
+
+impl Window {
+    /// What the user sees: its title, else its app id.
+    pub fn label(&self) -> String {
+        match (self.title.is_empty(), self.app_id.is_empty()) {
+            (false, _) => self.title.clone(),
+            (true, false) => self.app_id.clone(),
+            (true, true) => format!("Window {}", self.id),
+        }
+    }
 }
 
 impl Monitor {
@@ -36,7 +56,7 @@ struct Asking {
     done: bool,
 }
 
-/// The monitors the user can share, in wayluck's order.
+/// The monitors the user can share, in wayluck's order, with their windows.
 pub fn shareable() -> Result<Vec<Monitor>, Box<dyn std::error::Error>> {
     let connection = Connection::connect_to_env()?;
     let (globals, mut queue) = registry_queue_init::<Asking>(&connection)?;
@@ -87,10 +107,20 @@ impl Dispatch<WayluckPickV1, ()> for Asking {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            wayluck_pick_v1::Event::Monitor { name, description } => {
-                asking.monitors.push(Monitor { name, description })
-            }
             wayluck_pick_v1::Event::Done => asking.done = true,
+            wayluck_pick_v1::Event::Monitor { name, description } => {
+                asking.monitors.push(Monitor {
+                    name,
+                    description,
+                    windows: Vec::new(),
+                })
+            }
+            // The last monitor's.
+            wayluck_pick_v1::Event::Window { id, title, app_id } => {
+                if let Some(monitor) = asking.monitors.last_mut() {
+                    monitor.windows.push(Window { id, title, app_id });
+                }
+            }
         }
     }
 }

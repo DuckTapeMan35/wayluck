@@ -1,7 +1,7 @@
 //! `wayluck pick`: xdg-desktop-portal-wlr's chooser_cmd. When an app asks to
 //! share the screen, the portal runs it: it asks wayluck what can be shared,
 //! shows the user a picker with live thumbnails, and prints the choice the
-//! way the portal wants it ("Monitor: NAME"). The picker is a window like
+//! way the portal wants it ("Monitor: NAME", "Window: ID"). The picker is a window like
 //! any other: the window manager places it (fixed size: floating).
 
 mod ask;
@@ -26,14 +26,43 @@ pub fn run() -> i32 {
     }
 }
 
+/// One thing the user can choose: how it's shown, and what's printed.
+struct Choice {
+    row: window::Row,
+    source: capture::Source,
+    answer: String,
+}
+
 fn pick() -> Result<Option<String>, Box<dyn std::error::Error>> {
     let monitors = ask::shareable()?;
     if monitors.is_empty() {
         return Err("nothing to share".into());
     }
-    let labels = monitors.iter().map(ask::Monitor::label).collect();
-    let names: Vec<String> = monitors.iter().map(|m| m.name.clone()).collect();
-    let (captures, queue) = capture::Captures::start(&names)?;
-    let chosen = window::choose(labels, captures, queue)?;
-    Ok(chosen.map(|at| format!("Monitor: {}", monitors[at].name)))
+    // Each monitor, and under it its windows.
+    let mut choices = Vec::new();
+    for monitor in &monitors {
+        choices.push(Choice {
+            row: window::Row {
+                label: monitor.label(),
+                indented: false,
+            },
+            source: capture::Source::Monitor(monitor.name.clone()),
+            answer: format!("Monitor: {}", monitor.name),
+        });
+        for w in &monitor.windows {
+            choices.push(Choice {
+                row: window::Row {
+                    label: w.label(),
+                    indented: true,
+                },
+                source: capture::Source::Window(w.id),
+                answer: format!("Window: {}", w.id),
+            });
+        }
+    }
+    let sources: Vec<_> = choices.iter().map(|c| c.source.clone()).collect();
+    let (captures, queue) = capture::Captures::start(&sources)?;
+    let rows = choices.iter().map(|c| c.row.clone()).collect();
+    let chosen = window::choose(rows, captures, queue)?;
+    Ok(chosen.map(|at| choices[at].answer.clone()))
 }

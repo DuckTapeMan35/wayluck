@@ -1,9 +1,10 @@
-//! Live thumbnails: each monitor captured (ext-image-copy-capture), frame
-//! after frame, over a connection of the picker's own. A frame comes into a
-//! dmabuf on wayluck's GPU when it offers one (the picker draws it from
-//! there: nothing is copied), else into shared memory. The next is asked for
-//! once the last was drawn (next), so frames come no faster than the picker
-//! shows them.
+//! Live thumbnails: each monitor and window captured (ext-image-copy-capture;
+//! a window found by its id in ext-foreign-toplevel-list), frame after
+//! frame, over a connection of the picker's own. A frame comes into a dmabuf
+//! on wayluck's GPU when it offers one (the picker draws it from there:
+//! nothing is copied), else into shared memory. The next is asked for once
+//! the last was drawn (next), so frames come no faster than the picker shows
+//! them.
 
 use smithay::{
     backend::{
@@ -35,7 +36,12 @@ use wayland_client::{
     },
 };
 use wayland_protocols::ext::{
+    foreign_toplevel_list::v1::client::{
+        ext_foreign_toplevel_handle_v1::{self, ExtForeignToplevelHandleV1},
+        ext_foreign_toplevel_list_v1::{self, ExtForeignToplevelListV1},
+    },
     image_capture_source::v1::client::{
+        ext_foreign_toplevel_image_capture_source_manager_v1::ExtForeignToplevelImageCaptureSourceManagerV1,
         ext_image_capture_source_v1::ExtImageCaptureSourceV1,
         ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1,
     },
@@ -50,6 +56,15 @@ use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1,
 };
 
+/// What a thumbnail shows.
+#[derive(Clone)]
+pub enum Source {
+    /// A monitor, by its wl_output's name.
+    Monitor(String),
+    /// A window, by its ext-foreign-toplevel-list identifier.
+    Window(u32),
+}
+
 pub struct Captures {
     connection: Connection,
     shm: WlShm,
@@ -61,6 +76,8 @@ pub struct Captures {
     pub thumbnails: Vec<Thumbnail>,
     /// The monitors' wl_outputs, and their names once told.
     outputs: Vec<(WlOutput, Option<String>)>,
+    /// The windows' handles, and their ids once told.
+    toplevels: Vec<(ExtForeignToplevelHandleV1, Option<String>)>,
     /// A thumbnail got a new frame since this was last cleared.
     pub fresh: bool,
 }
@@ -107,10 +124,10 @@ enum Memory {
 }
 
 impl Captures {
-    /// Start capturing the monitors with these names. The queue is to be
-    /// dispatched with the captures as its connection has events (window.rs).
+    /// Start capturing these sources, a thumbnail for each. The queue is to
+    /// be dispatched with the captures as its connection has events
     pub fn start(
-        names: &[String],
+        sources: &[Source],
     ) -> Result<(Captures, EventQueue<Captures>), Box<dyn std::error::Error>> {
         let connection = Connection::connect_to_env()?;
         let (globals, mut queue) = registry_queue_init::<Captures>(&connection)?;
@@ -118,7 +135,11 @@ impl Captures {
         let qh = queue.handle();
 
         let shm: WlShm = globals.bind(&qh, 1..=1, ())?;
-        let sources: ExtOutputImageCaptureSourceManagerV1 = globals.bind(&qh, 1..=1, ())?;
+        let output_sources: ExtOutputImageCaptureSourceManagerV1 = globals.bind(&qh, 1..=1, ())?;
+        // Windows, if they can be captured.
+        let window_sources: Option<ExtForeignToplevelImageCaptureSourceManagerV1> =
+            globals.bind(&qh, 1..=1, ()).ok();
+        let list: Option<ExtForeignToplevelListV1> = globals.bind(&qh, 1..=1, ()).ok();
         let copier: ExtImageCopyCaptureManagerV1 = globals.bind(&qh, 1..=1, ())?;
         // Version 3: buffers made at once (create_immed).
         let linux_dmabuf = globals.bind(&qh, 3..=3, ()).ok();
@@ -139,18 +160,34 @@ impl Captures {
             gpu: None,
             thumbnails: Vec::new(),
             outputs,
+            toplevels: Vec::new(),
             fresh: false,
         };
+        // The outputs' names, and the windows with their ids.
         queue.roundtrip(&mut captures)?;
-        for (at, name) in names.iter().enumerate() {
+        for (at, wanted) in sources.iter().enumerate() {
             let mut thumbnail = Thumbnail::default();
-            let output = (captures.outputs.iter()).find(|(_, n)| n.as_ref() == Some(name));
-            if let Some((output, _)) = output {
-                let source = sources.create_source(output, &qh, ());
+            let source = match wanted {
+                Source::Monitor(name) => (captures.outputs.iter())
+                    .find(|(_, n)| n.as_ref() == Some(name))
+                    .map(|(output, _)| output_sources.create_source(output, &qh, ())),
+                Source::Window(id) => {
+                    let id = id.to_string();
+                    (captures.toplevels.iter())
+                        .find(|(_, i)| i.as_ref() == Some(&id))
+                        .zip(window_sources.as_ref())
+                        .map(|((handle, _), manager)| manager.create_source(handle, &qh, ()))
+                }
+            };
+            if let Some(source) = source {
                 thumbnail.session = Some(copier.create_session(&source, Options::empty(), &qh, at));
                 source.destroy();
             }
             captures.thumbnails.push(thumbnail);
+        }
+        // Windows made from now on have no thumbnail: no more news of them.
+        if let Some(list) = list {
+            list.stop();
         }
         captures.connection.flush()?;
         Ok((captures, queue))
@@ -420,6 +457,47 @@ macro_rules! ignore {
     )*};
 }
 
+impl Dispatch<ExtForeignToplevelListV1, ()> for Captures {
+    fn event(
+        captures: &mut Self,
+        list: &ExtForeignToplevelListV1,
+        event: ext_foreign_toplevel_list_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            ext_foreign_toplevel_list_v1::Event::Toplevel { toplevel } => {
+                captures.toplevels.push((toplevel, None));
+            }
+            ext_foreign_toplevel_list_v1::Event::Finished => list.destroy(),
+            _ => {}
+        }
+    }
+
+    // The toplevel event makes a handle.
+    wayland_client::event_created_child!(Captures, ExtForeignToplevelListV1, [
+        ext_foreign_toplevel_list_v1::EVT_TOPLEVEL_OPCODE => (ExtForeignToplevelHandleV1, ())
+    ]);
+}
+
+impl Dispatch<ExtForeignToplevelHandleV1, ()> for Captures {
+    fn event(
+        captures: &mut Self,
+        handle: &ExtForeignToplevelHandleV1,
+        event: ext_foreign_toplevel_handle_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let ext_foreign_toplevel_handle_v1::Event::Identifier { identifier } = event
+            && let Some((_, id)) = captures.toplevels.iter_mut().find(|(h, _)| h == handle)
+        {
+            *id = Some(identifier);
+        }
+    }
+}
+
 ignore! {
     WlRegistry, GlobalListContents;
     WlShm, ();
@@ -430,4 +508,5 @@ ignore! {
     ExtImageCopyCaptureManagerV1, ();
     ZwpLinuxDmabufV1, ();
     ZwpLinuxBufferParamsV1, ();
+    ExtForeignToplevelImageCaptureSourceManagerV1, ();
 }

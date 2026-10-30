@@ -1,8 +1,8 @@
 //! The picker's window: a list to choose from, each with a live thumbnail,
 //! drawn on the GPU (smithay's renderer, through winit, as a
-//! Wayland client). Fixed size, so the window manager floats it. Up and Down
-//! (or the pointer) select, Enter (or a click) chooses, Esc (or closing the
-//! window) cancels.
+//! Wayland client). Fixed size, so the window manager floats it; a long
+//! list scrolls under its heading. Up and Down (or the pointer) select,
+//! Enter (or a click) chooses, Esc (or closing the window) cancels.
 
 use super::{
     capture::{Captures, Image},
@@ -12,8 +12,8 @@ use smithay::{
     backend::{
         allocator::Fourcc,
         input::{
-            AbsolutePositionEvent, ButtonState, InputEvent, KeyState, KeyboardKeyEvent,
-            PointerButtonEvent,
+            AbsolutePositionEvent, Axis, ButtonState, InputEvent, KeyState, KeyboardKeyEvent,
+            PointerAxisEvent, PointerButtonEvent,
         },
         renderer::{
             Color32F, Frame, ImportDma, ImportMem, Renderer, Texture,
@@ -25,7 +25,7 @@ use smithay::{
         calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic},
         winit::{dpi::LogicalSize, platform::wayland::WindowAttributesExtWayland, window::Window},
     },
-    utils::{Logical, Physical, Point, Rectangle, Size, Transform},
+    utils::{Buffer, Logical, Physical, Point, Rectangle, Size, Transform},
 };
 use std::os::fd::AsFd;
 use wayland_client::{EventQueue, QueueHandle};
@@ -36,19 +36,24 @@ const TITLE: &str = "Choose what to share";
 
 // Its layout, in logical pixels: a heading, then a row for each choice.
 const WIDTH: i32 = 480;
+/// As tall as it gets: more rows scroll.
+const MAX_HEIGHT: i32 = 560;
 const PADDING: i32 = 12;
 const HEADING: i32 = 44;
 const ROW: i32 = 96;
-const TEXT: f32 = 15.0;
-
+/// How far in a row under another goes (a window under its monitor).
+const INDENT: i32 = 24;
 /// The box a thumbnail fits in, keeping its shape: 16:9.
 const THUMBNAIL: (i32, i32) = (128, 72);
+const TEXT: f32 = 15.0;
+/// How far one notch of a mouse wheel scrolls.
+const NOTCH: f64 = ROW as f64 / 2.0;
 
 const BACKGROUND: Color32F = Color32F::new(0.12, 0.12, 0.13, 1.0);
 const SELECTED: Color32F = Color32F::new(0.23, 0.43, 0.65, 1.0);
-
 /// Where a thumbnail will be, until its first frame.
 const NO_THUMBNAIL: Color32F = Color32F::new(0.2, 0.2, 0.22, 1.0);
+const SCROLLBAR: Color32F = Color32F::new(0.35, 0.35, 0.38, 1.0);
 
 // Keys, as xkb keycodes (evdev's + 8): the same whatever the layout.
 const KEY_ESC: u32 = 1 + 8;
@@ -58,11 +63,22 @@ const KEY_UP: u32 = 103 + 8;
 const KEY_DOWN: u32 = 108 + 8;
 const BTN_LEFT: u32 = 0x110;
 
+/// One choice, as the user sees it.
+#[derive(Clone)]
+pub struct Row {
+    pub label: String,
+    /// Under the row before it (a window under its monitor).
+    pub indented: bool,
+}
+
 struct Picker {
     backend: WinitGraphicsBackend<GlesRenderer>,
     text: Text,
-    /// What to choose from, as the user reads it.
-    labels: Vec<String>,
+    rows: Vec<Row>,
+    /// The window's height, in logical pixels.
+    height: i32,
+    /// How far down the list is scrolled, in logical pixels.
+    scroll: i32,
     /// The heading and labels drawn, for the scale they were drawn at.
     drawn: Option<(f64, Vec<GlesTexture>)>,
     captures: Captures,
@@ -71,21 +87,21 @@ struct Picker {
     /// Each row's latest frame, once there is one.
     thumbnails: Vec<Option<GlesTexture>>,
     selected: usize,
-    /// The row under the pointer, if any.
-    hovered: Option<usize>,
+    /// Where the pointer is in the window, if it is.
+    pointer: Option<Point<f64, Logical>>,
     /// Some once the user decides: Some(row) chosen, None cancelled.
     answer: Option<Option<usize>>,
 }
 
-/// Show labels, one per row, with captures' thumbnails: the row the user
-/// chooses, or None if they cancel.
+/// Show rows, with captures' thumbnails: the row the user chooses, or None
+/// if they cancel.
 pub fn choose(
-    labels: Vec<String>,
+    rows: Vec<Row>,
     captures: Captures,
     mut queue: EventQueue<Captures>,
 ) -> Result<Option<usize>, Box<dyn std::error::Error>> {
     let text = Text::new()?;
-    let height = HEADING + ROW * labels.len() as i32 + PADDING;
+    let height = (HEADING + ROW * rows.len() as i32 + PADDING).min(MAX_HEIGHT);
     let attributes = Window::default_attributes()
         .with_name(APP_ID, APP_ID)
         .with_title(TITLE)
@@ -123,13 +139,15 @@ pub fn choose(
     let mut picker = Picker {
         backend,
         text,
-        thumbnails: labels.iter().map(|_| None).collect(),
-        labels,
+        thumbnails: rows.iter().map(|_| None).collect(),
+        rows,
+        height,
+        scroll: 0,
+        drawn: None,
         captures,
         qh,
-        drawn: None,
         selected: 0,
-        hovered: None,
+        pointer: None,
         answer: None,
     };
     while picker.answer.is_none() {
@@ -155,16 +173,20 @@ impl Picker {
             }
             WinitEvent::Input(InputEvent::PointerMotionAbsolute { event }) => {
                 let size = self.size().to_f64().to_logical(self.scale());
-                let at = event.position_transformed(size.to_i32_round());
-                self.hovered = self.row_at(at);
-                if let Some(row) = self.hovered {
-                    self.select(row);
-                }
+                self.pointer = Some(event.position_transformed(size.to_i32_round()));
+                self.select_hovered();
+            }
+            WinitEvent::Input(InputEvent::PointerAxis { event }) => {
+                let by = (event.amount(Axis::Vertical))
+                    .or_else(|| event.amount_v120(Axis::Vertical).map(|v| v / 120.0 * NOTCH))
+                    .unwrap_or(0.0);
+                self.scroll_to(self.scroll + by.round() as i32);
+                self.select_hovered();
             }
             WinitEvent::Input(InputEvent::PointerButton { event }) => {
                 if event.button_code() == BTN_LEFT
                     && event.state() == ButtonState::Pressed
-                    && let Some(row) = self.hovered
+                    && let Some(row) = self.hovered()
                 {
                     self.answer = Some(Some(row));
                 }
@@ -174,14 +196,16 @@ impl Picker {
     }
 
     fn key(&mut self, key: u32) {
-        let last = self.labels.len() - 1;
-        match key {
-            KEY_ESC => self.answer = Some(None),
-            KEY_ENTER | KEY_KP_ENTER => self.answer = Some(Some(self.selected)),
-            KEY_UP => self.select(self.selected.saturating_sub(1)),
-            KEY_DOWN => self.select((self.selected + 1).min(last)),
-            _ => {}
-        }
+        let last = self.rows.len() - 1;
+        let row = match key {
+            KEY_ESC => return self.answer = Some(None),
+            KEY_ENTER | KEY_KP_ENTER => return self.answer = Some(Some(self.selected)),
+            KEY_UP => self.selected.saturating_sub(1),
+            KEY_DOWN => (self.selected + 1).min(last),
+            _ => return,
+        };
+        self.select(row);
+        self.reveal(row);
     }
 
     fn select(&mut self, row: usize) {
@@ -191,13 +215,47 @@ impl Picker {
         }
     }
 
-    /// The row at a point in the window, in logical pixels.
-    fn row_at(&self, at: Point<f64, Logical>) -> Option<usize> {
-        if at.x < 0.0 || at.x >= WIDTH as f64 || at.y < HEADING as f64 {
+    /// The row under the pointer is selected (if it's over one).
+    fn select_hovered(&mut self) {
+        if let Some(row) = self.hovered() {
+            self.select(row);
+        }
+    }
+
+    /// Scroll as little as shows all of row.
+    fn reveal(&mut self, row: usize) {
+        let top = ROW * row as i32;
+        if top < self.scroll {
+            self.scroll_to(top);
+        } else if top + ROW > self.scroll + self.list_height() {
+            self.scroll_to(top + ROW - self.list_height());
+        }
+    }
+
+    /// Scroll to (as far as the list goes).
+    fn scroll_to(&mut self, to: i32) {
+        let most = (ROW * self.rows.len() as i32 - self.list_height()).max(0);
+        let to = to.clamp(0, most);
+        if to != self.scroll {
+            self.scroll = to;
+            self.backend.window().request_redraw();
+        }
+    }
+
+    /// How tall the part of the window showing the list is.
+    fn list_height(&self) -> i32 {
+        self.height - HEADING - PADDING
+    }
+
+    /// The row under the pointer, if any.
+    fn hovered(&self) -> Option<usize> {
+        let at = self.pointer?;
+        let in_list = at.y >= HEADING as f64 && at.y < (HEADING + self.list_height()) as f64;
+        if at.x < 0.0 || at.x >= WIDTH as f64 || !in_list {
             return None;
         }
-        let row = ((at.y - HEADING as f64) / ROW as f64) as usize;
-        (row < self.labels.len()).then_some(row)
+        let row = ((at.y - HEADING as f64 + self.scroll as f64) / ROW as f64) as usize;
+        (row < self.rows.len()).then_some(row)
     }
 
     fn size(&self) -> Size<i32, Physical> {
@@ -215,7 +273,7 @@ impl Picker {
         if self.drawn.as_ref().is_some_and(|(s, _)| *s == scale) {
             return Ok(());
         }
-        let lines = std::iter::once(TITLE).chain(self.labels.iter().map(String::as_str));
+        let lines = std::iter::once(TITLE).chain(self.rows.iter().map(|r| r.label.as_str()));
         let mut textures = Vec::new();
         for line in lines {
             let line = self.text.line(line, TEXT * scale as f32);
@@ -274,18 +332,21 @@ impl Picker {
         let whole = [Rectangle::from_size(size)];
         let (_, textures) = self.drawn.as_ref().ok_or("no text")?;
         let (heading, labels) = textures.split_first().ok_or("no text")?;
-        let selected = self.selected;
-        let thumbnails = &self.thumbnails;
+        let (selected, scroll, height) = (self.selected, self.scroll, self.height);
+        let list_height = self.list_height();
+        let (rows, thumbnails) = (&self.rows, &self.thumbnails);
         {
             let (renderer, mut framebuffer) = self.backend.bind()?;
-
             // Flipped180: what winit's GL surface needs to come out the
             // right way up.
             let mut frame = renderer.render(&mut framebuffer, size, Transform::Flipped180)?;
             frame.clear(BACKGROUND, &whole)?;
-            line(&mut frame, &whole, heading, px(0), px(HEADING), px(PADDING))?;
             for (row, label) in labels.iter().enumerate() {
-                let top = HEADING + ROW * row as i32;
+                let top = HEADING + ROW * row as i32 - scroll;
+                // Out of sight: not drawn.
+                if top + ROW <= HEADING || top >= height {
+                    continue;
+                }
                 if row == selected {
                     let at = Rectangle::new(
                         (px(PADDING / 2), px(top)).into(),
@@ -293,21 +354,43 @@ impl Picker {
                     );
                     frame.draw_solid(at, &whole, SELECTED)?;
                 }
-                // The thumbnail at the left, in the middle of the row; the
-                // label after it.
+                // The thumbnail at the left (further in if indented), in
+                // the middle of the row; the label after it, cut off at the
+                // window's edge.
+                let left = PADDING + if rows[row].indented { INDENT } else { 0 };
                 let (w, h) = THUMBNAIL;
                 let slot = Rectangle::new(
-                    (px(PADDING), px(top + (ROW - h) / 2)).into(),
+                    (px(left), px(top + (ROW - h) / 2)).into(),
                     (px(w), px(h)).into(),
                 );
                 match &thumbnails[row] {
                     Some(t) => thumbnail(&mut frame, &whole, t, slot)?,
                     None => frame.draw_solid(slot, &whole, NO_THUMBNAIL)?,
                 }
-                let left = px(PADDING + w + PADDING);
-                line(&mut frame, &whole, label, px(top), px(ROW), left)?;
+                let left = left + w + PADDING;
+                let room = px(WIDTH - PADDING - left);
+                line(&mut frame, &whole, label, px(top), px(ROW), px(left), room)?;
             }
-
+            // The heading, over rows scrolled under it, and the padding at
+            // the bottom.
+            let top = Rectangle::from_size((size.w, px(HEADING)).into());
+            frame.draw_solid(top, &whole, BACKGROUND)?;
+            let bottom = Rectangle::new(
+                (0, px(height - PADDING)).into(),
+                (size.w, px(PADDING)).into(),
+            );
+            frame.draw_solid(bottom, &whole, BACKGROUND)?;
+            let (left, room) = (px(PADDING), px(WIDTH - 2 * PADDING));
+            line(&mut frame, &whole, heading, 0, px(HEADING), left, room)?;
+            // How far down the list is, if it doesn't all fit.
+            let all = ROW * rows.len() as i32;
+            if all > list_height {
+                let bar = Rectangle::new(
+                    (px(WIDTH - 4), px(HEADING + scroll * list_height / all)).into(),
+                    (px(3), px(list_height * list_height / all)).into(),
+                );
+                frame.draw_solid(bar, &whole, SCROLLBAR)?;
+            }
             // Showing it (submit) waits for the drawing: nothing to wait for.
             let _drawn = frame.finish()?;
         }
@@ -319,7 +402,8 @@ impl Picker {
 }
 
 /// Draw a line of text in a row top pixels down and height tall: in its
-/// middle, left from the left. whole: the window (all of it is drawn).
+/// middle, left from the left, as much of it as fits in room. whole: the
+/// window (all of it is drawn).
 fn line(
     frame: &mut GlesFrame<'_, '_>,
     whole: &[Rectangle<i32, Physical>],
@@ -327,9 +411,14 @@ fn line(
     top: i32,
     height: i32,
     left: i32,
+    room: i32,
 ) -> Result<(), GlesError> {
-    let at = Point::from((left, top + (height - text.height() as i32) / 2));
-    frame.render_texture_at(text, at, 1, 1.0, Transform::Normal, whole, &[], 1.0)
+    let size: Size<i32, Physical> = ((text.width() as i32).min(room), text.height() as i32).into();
+    let at = Point::from((left, top + (height - size.h) / 2));
+    let src: Rectangle<f64, Buffer> = Rectangle::from_size((size.w, size.h).into()).to_f64();
+    let dst = Rectangle::new(at, size);
+    // Frame's, not GlesFrame's own (which takes a shader too).
+    Frame::render_texture_from_to(frame, text, src, dst, whole, &[], Transform::Normal, 1.0)
 }
 
 /// Draw a thumbnail as big as fits in slot, keeping its shape, centred.
