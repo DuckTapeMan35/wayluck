@@ -4,7 +4,9 @@
 //! picker`) on a connection of its own making: only that client
 //! sees the host global, which lists what can be shared and captures it
 //! small, workspaces off screen too. The window manager
-//! is told a picker is open, and offers its workspaces first.
+//! is told a picker is open, and offers its workspaces first; a workspace
+//! chosen is shared through a virtual output the window
+//! manager keeps it on until capture stops.
 
 use crate::{
     Wayluck,
@@ -14,6 +16,7 @@ use crate::{
         wayluck_picker_host_v1::{self, WayluckPickerHostV1},
         wayluck_picker_manager_v1::{self, WayluckPickerManagerV1},
     },
+    protocol::wayluck_wm_scene_v1::WayluckWmSceneV1,
     scenes::{Scene, SceneId},
     state::ClientState,
     windows,
@@ -42,6 +45,10 @@ use std::{
 /// How long a picker waits for the window manager's workspaces, at most.
 const OFFERS_PATIENCE: Duration = Duration::from_millis(200);
 
+/// How long a virtual output made for a shared workspace waits to be
+/// captured: if nothing has by then, it's as if capture stopped.
+const SHARE_PATIENCE: Duration = Duration::from_secs(10);
+
 /// The question being asked, if one is, and the workspaces the window
 /// manager offers for it.
 #[derive(Default)]
@@ -59,10 +66,11 @@ pub struct Picking {
     exited: Option<Sender<()>>,
 }
 
-/// A workspace the window manager offered: its scene, the monitor it's on,
-/// and its name.
+/// A workspace the window manager offered: its scene (and the window
+/// manager's object for it), the monitor it's on, and its name.
 struct Offer {
     scene: SceneId,
+    wm_scene: WayluckWmSceneV1,
     output: Output,
     name: String,
 }
@@ -144,13 +152,53 @@ impl Wayluck {
     }
 
     /// The window manager offers a workspace.
-    pub fn offer_workspace(&mut self, scene: SceneId, output: Output, name: String) {
+    pub fn offer_workspace(&mut self, wm_scene: WayluckWmSceneV1, output: Output, name: String) {
+        let Some(&scene) = wm_scene.data::<SceneId>() else {
+            return;
+        };
         self.picking.offers.retain(|o| o.scene != scene);
         self.picking.offers.push(Offer {
             scene,
+            wm_scene,
             output,
             name,
         });
+    }
+
+    /// The user chose a workspace: a virtual output shows it, like the
+    /// monitor it's on, and whoever asked hears its name. The window manager
+    /// keeps it laid out, and lets it go when capture stops.
+    fn share_workspace(&mut self, number: u32) {
+        let offer = (self.picking.offers.iter()).find(|o| o.scene.number() == number);
+        let Some(offer) = offer else {
+            return self.answer(None);
+        };
+        let (scene, wm_scene, template) =
+            (offer.scene, offer.wm_scene.clone(), offer.output.clone());
+        let Some(mode) = template.current_mode() else {
+            return self.answer(None);
+        };
+        let output = self.add_virtual_output(mode.size, Some(template), 0);
+        self.scenes.show(&output, Some(scene));
+        self.sync_space();
+        if !self.wm_share_workspace(&output, &wm_scene) {
+            self.remove_virtual_output(&output);
+            return self.answer(None);
+        }
+        // Nothing captures it after all (the app gave up): it goes.
+        let unclaimed = output.clone();
+        let timer = Timer::from_duration(SHARE_PATIENCE);
+        let timer = self.loop_handle.insert_source(timer, move |_, _, state| {
+            let captured = state.captures.iter().any(|(o, _)| *o == unclaimed);
+            if state.is_virtual(&unclaimed) && !captured {
+                state.wm_capture(&unclaimed, false);
+            }
+            TimeoutAction::Drop
+        });
+        if let Err(e) = timer {
+            tracing::warn!("can't watch a shared workspace's output: {e}");
+        }
+        self.answer(Some(format!("Monitor: {}", output.name())));
     }
 
     /// The window manager offered all it will (or took too long): the
@@ -337,6 +385,7 @@ impl Dispatch<WayluckPickerHostV1, ()> for Wayluck {
                 let fit = (width as i32, height as i32).into();
                 state.start_session(session, source, false, Some(fit));
             }
+            Request::ShareWorkspace { workspace } if mine => state.share_workspace(workspace),
             // Captured like any source: as for an output or a window, a
             // workspace gone already gives a source that stops at once.
             Request::WorkspaceSource { source, workspace } => {

@@ -147,7 +147,7 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
             } => {
                 let output = output.data::<Output>().cloned();
                 if let (true, Some(output)) = (state.wm.manager.as_ref() == Some(manager), output) {
-                    state.offer_workspace(scene_of(&scene), output, name);
+                    state.offer_workspace(scene, output, name);
                 }
             }
             wayluck_wm_manager_v1::Request::OffersDone => {
@@ -528,6 +528,26 @@ impl Wayluck {
         if let Some(m) = &self.wm.manager {
             m.ready();
         }
+    }
+
+    /// A virtual output made to share a workspace: the window
+    /// manager gets it, and hears which scene it shows. false: there's no
+    /// window manager to.
+    pub fn wm_share_workspace(&mut self, output: &Output, scene: &WayluckWmSceneV1) -> bool {
+        let Some((manager, client)) = self.wm.manager_and_client() else {
+            return false;
+        };
+        let Ok(resource) = client.create_resource::<WayluckWmOutputV1, Output, Wayluck>(
+            &self.display_handle,
+            manager.version(),
+            output.clone(),
+        ) else {
+            return false;
+        };
+        manager.share_workspace(&resource, scene);
+        send_output_state(&resource, output, &self.space);
+        self.wm.outputs.push((output.clone(), resource));
+        true
     }
 
     /// Tell the window manager (if any) about an output.

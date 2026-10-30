@@ -1,7 +1,7 @@
 //! Choosing what to share. `wayluck pick` is xdg-desktop-portal-wlr's
 //! chooser_cmd: it asks wayluck and prints the answer the way
-//! the portal wants it ("Monitor: NAME", "Window: ID"). wayluck asks the
-//! user by starting `wayluck picker` on a connection it makes, the only one
+//! the portal wants it ("Monitor: NAME", "Window: ID"; a workspace is a virtual output wayluck makes, so "Monitor: VIRTUAL-N").
+//! wayluck asks the user by starting `wayluck picker` on a connection it makes, the only one
 //! allowed to see what can be shared: it shows a window
 //! with live thumbnails , which the window manager places like
 //! any other (fixed size: floating), and gives wayluck the user's choice.
@@ -42,11 +42,11 @@ pub fn run_picker() -> i32 {
 }
 
 /// One row of the picker: how it's shown, what its thumbnail shows, and
-/// what's printed if it's chosen (None: it can't be, yet).
+/// what's answered if it's chosen.
 struct Choice {
     row: window::Row,
     source: capture::Source,
-    answer: Option<String>,
+    answer: ask::Answer,
 }
 
 impl Choice {
@@ -58,7 +58,7 @@ impl Choice {
                 choosable: true,
             },
             source: capture::Source::Window(w.id),
-            answer: Some(format!("Window: {}", w.id)),
+            answer: ask::Answer::Said(format!("Window: {}", w.id)),
         }
     }
 }
@@ -80,7 +80,7 @@ fn picker() -> Result<(), Box<dyn std::error::Error>> {
                 choosable: true,
             },
             source: capture::Source::Monitor(monitor.name.clone()),
-            answer: Some(format!("Monitor: {}", monitor.name)),
+            answer: ask::Answer::Said(format!("Monitor: {}", monitor.name)),
         });
         choices.extend(monitor.windows.iter().map(|w| Choice::window(w, 1)));
         for workspace in &monitor.workspaces {
@@ -88,10 +88,10 @@ fn picker() -> Result<(), Box<dyn std::error::Error>> {
                 row: window::Row {
                     label: workspace.name.clone(),
                     depth: 1,
-                    choosable: false,
+                    choosable: true,
                 },
                 source: capture::Source::Workspace(workspace.id),
-                answer: None,
+                answer: ask::Answer::Workspace(workspace.id),
             });
             choices.extend(workspace.windows.iter().map(|w| Choice::window(w, 2)));
         }
@@ -102,6 +102,6 @@ fn picker() -> Result<(), Box<dyn std::error::Error>> {
         capture::Captures::start(host.connection(), host.proxy(), &sources, fit)?;
     let rows = choices.iter().map(|c| c.row.clone()).collect();
     let (chosen, host) = window::choose(rows, host, captures, queue)?;
-    host.answer(chosen.and_then(|at| choices[at].answer.clone()));
+    host.answer(chosen.map(|at| choices[at].answer.clone()));
     Ok(())
 }

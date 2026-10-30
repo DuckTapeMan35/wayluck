@@ -92,6 +92,15 @@
       <arg name="answer" type="string"/>
     </request>
 
+    <request name="share_workspace">
+      <description summary="the user chose a workspace">
+        By its id from a workspace event. wayluck makes a virtual output
+        showing it, and whoever asked hears its name ("Monitor: NAME"), or
+        that it was cancelled, if it can't be shared.
+      </description>
+      <arg name="workspace" type="uint"/>
+    </request>
+
     <request name="cancel">
       <description summary="the user chose nothing"/>
     </request>

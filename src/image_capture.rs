@@ -744,7 +744,7 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, FrameData> for Wayluck {
                     frame.failed(FailureReason::BufferConstraints);
                     return;
                 }
-                let (first, source) = (!session.copied, session.source.clone());
+                let source = session.source.clone();
                 state.image_capture.frames.push(Waiting {
                     frame: frame.clone(),
                     session: data.session.clone(),
@@ -753,10 +753,10 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, FrameData> for Wayluck {
                 if let Source::Output(output) = &source {
                     state.capture_activity(output);
                 }
-                // A first frame doesn't wait for something to change.
-                if first {
-                    state.queue_redraw();
-                }
+                // A frame is drawn to see: anything that changed since the
+                // last copy (while none was waiting) is in this one. If
+                // nothing did, it waits for something to (capture_frames).
+                state.queue_redraw();
             }
             _ => {}
         }

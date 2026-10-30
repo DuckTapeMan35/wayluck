@@ -108,6 +108,16 @@ pub struct Host {
     asking: Asking,
 }
 
+/// What the user chose.
+#[derive(Clone)]
+pub enum Answer {
+    /// As the portal is told it ("Monitor: NAME", "Window: ID").
+    Said(String),
+    /// A workspace (by its id): wayluck shares it through an output of its
+    /// own, and tells the portal that.
+    Workspace(u32),
+}
+
 impl Host {
     /// The connection, for the thumbnails too (on their own queue).
     pub fn connection(&self) -> Connection {
@@ -125,9 +135,10 @@ impl Host {
     }
 
     /// The user chose (None: nothing): wayluck hears.
-    pub fn answer(self, answer: Option<String>) {
+    pub fn answer(self, answer: Option<Answer>) {
         match answer {
-            Some(answer) => self.proxy.choose(answer),
+            Some(Answer::Said(answer)) => self.proxy.choose(answer),
+            Some(Answer::Workspace(id)) => self.proxy.share_workspace(id),
             None => self.proxy.cancel(),
         }
         // Drop: destroyed, and sent.
