@@ -4,11 +4,11 @@
     SPDX-License-Identifier: GPL-3.0-or-later
   </copyright>
 
-  <description summary="asking the user what to share">
-    How `wayluck pick` (xdg-desktop-portal-wlr's chooser_cmd) asks wayluck
-    for the user's choice of what to share: wayluck shows its picker, the
-    user chooses or cancels, and the answer comes back ready to print for
-    the portal. Nothing is shared by asking: only the user's choice decides.
+  <description summary="what there is to share">
+    How `wayluck pick` (xdg-desktop-portal-wlr's chooser_cmd) learns what
+    the user can share, to show it in its picker. The user's choice stays
+    with the picker: it prints it for the portal. Nothing is shared by
+    asking.
 
     Unstable: changed in place, without version bumps, until it's frozen.
   </description>
@@ -19,36 +19,31 @@
     </request>
 
     <request name="pick">
-      <description summary="show the picker">
-        The user picks a monitor, a workspace or a window to share. One
-        picker at a time: while one is open, a new pick is cancelled at
-        once.
+      <description summary="what can be shared?">
+        The answer comes as events on the new object: what can be shared,
+        then done.
       </description>
       <arg name="id" type="new_id" interface="wayluck_pick_v1"/>
     </request>
   </interface>
 
   <interface name="wayluck_pick_v1" version="1">
-    <description summary="one question to the user"/>
+    <description summary="what can be shared, once"/>
 
     <request name="destroy" type="destructor">
-      <description summary="stop asking">
-        If the picker is still open, it closes, as if cancelled.
-      </description>
+      <description summary="done with it"/>
     </request>
 
-    <event name="chosen">
-      <description summary="the user chose">
-        As xdg-desktop-portal-wlr's chooser_cmd prints it: "Monitor: NAME"
-        (a monitor, or a virtual output showing the chosen workspace) or
-        "Window: ID" (an ext-foreign-toplevel-list identifier). The picker
-        has closed.
+    <event name="monitor">
+      <description summary="a monitor can be shared">
+        In the order the monitors are in. Shared as "Monitor: NAME".
       </description>
-      <arg name="answer" type="string"/>
+      <arg name="name" type="string" summary="the wl_output's name"/>
+      <arg name="description" type="string" summary="the wl_output's description"/>
     </event>
 
-    <event name="cancelled">
-      <description summary="the user chose nothing (Esc, or the picker closed)"/>
+    <event name="done">
+      <description summary="that's all there is"/>
     </event>
   </interface>
 </protocol>

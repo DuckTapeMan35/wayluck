@@ -6,6 +6,7 @@ mod handlers;
 mod image_capture;
 mod input;
 mod layers;
+mod pick;
 mod picker;
 mod popups;
 mod protocol;
@@ -34,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `wayluck pick`: not a compositor, a client asking the running one what
     // to share (picker.rs).
     if std::env::args().nth(1).as_deref() == Some("pick") {
-        std::process::exit(picker::run_pick());
+        std::process::exit(pick::run());
     }
 
     // Logs to stderr: stdout is the programs' it runs.

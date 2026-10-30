@@ -1,0 +1,96 @@
+//! Asking wayluck what can be shared, over wayluck_picker_unstable_v1.
+
+use wayland_client::{
+    Connection, Dispatch, QueueHandle,
+    globals::{GlobalListContents, registry_queue_init},
+    protocol::wl_registry::WlRegistry,
+};
+
+use crate::protocol::picker::client::{
+    wayluck_pick_v1::{self, WayluckPickV1},
+    wayluck_picker_manager_v1::WayluckPickerManagerV1,
+};
+
+pub struct Monitor {
+    /// What the portal is told: the wl_output's name.
+    pub name: String,
+    description: String,
+}
+
+impl Monitor {
+    /// What the user sees: its description (which says its name, make and
+    /// model), or its name if it has none.
+    pub fn label(&self) -> String {
+        if self.description.is_empty() {
+            self.name.clone()
+        } else {
+            self.description.clone()
+        }
+    }
+}
+
+/// What wayluck says can be shared, until it says that's all.
+#[derive(Default)]
+struct Asking {
+    monitors: Vec<Monitor>,
+    done: bool,
+}
+
+/// The monitors the user can share, in wayluck's order.
+pub fn shareable() -> Result<Vec<Monitor>, Box<dyn std::error::Error>> {
+    let connection = Connection::connect_to_env()?;
+    let (globals, mut queue) = registry_queue_init::<Asking>(&connection)?;
+    let manager: WayluckPickerManagerV1 = globals
+        .bind(&queue.handle(), 1..=1, ())
+        .map_err(|_| "this compositor isn't wayluck (no wayluck_picker_manager_v1)")?;
+    let pick = manager.pick(&queue.handle(), ());
+    let mut asking = Asking::default();
+    while !asking.done {
+        queue.blocking_dispatch(&mut asking)?;
+    }
+    pick.destroy();
+    manager.destroy();
+    Ok(asking.monitors)
+}
+
+impl Dispatch<WlRegistry, GlobalListContents> for Asking {
+    fn event(
+        _: &mut Self,
+        _: &WlRegistry,
+        _: <WlRegistry as wayland_client::Proxy>::Event,
+        _: &GlobalListContents,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<WayluckPickerManagerV1, ()> for Asking {
+    fn event(
+        _: &mut Self,
+        _: &WayluckPickerManagerV1,
+        _: <WayluckPickerManagerV1 as wayland_client::Proxy>::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<WayluckPickV1, ()> for Asking {
+    fn event(
+        asking: &mut Self,
+        _: &WayluckPickV1,
+        event: wayluck_pick_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wayluck_pick_v1::Event::Monitor { name, description } => {
+                asking.monitors.push(Monitor { name, description })
+            }
+            wayluck_pick_v1::Event::Done => asking.done = true,
+        }
+    }
+}

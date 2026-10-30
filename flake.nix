@@ -45,10 +45,10 @@
             libinput
           ];
           meta.mainProgram = "wayluck";
-          # The libraries winit and EGL open at run time.
           postFixup = ''
             wrapProgram $out/bin/wayluck \
-              --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (runtimeLibs pkgs)}
+              --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (runtimeLibs pkgs)} \
+              --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.fontconfig ]}
           '';
         };
       });
