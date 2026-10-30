@@ -253,6 +253,7 @@ fn listen(mut display: Display<Wayluck>, event_loop: &mut EventLoop<Wayluck>) ->
 #[derive(Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
+    pub picker: bool,
 }
 
 impl ClientData for ClientState {

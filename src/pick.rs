@@ -1,19 +1,22 @@
-//! `wayluck pick`: xdg-desktop-portal-wlr's chooser_cmd. When an app asks to
-//! share the screen, the portal runs it: it asks wayluck what can be shared,
-//! shows the user a picker with live thumbnails, and prints the choice the
-//! way the portal wants it ("Monitor: NAME", "Window: ID"). The picker is a window like
-//! any other: the window manager places it (fixed size: floating).
+//! Choosing what to share. `wayluck pick` is xdg-desktop-portal-wlr's
+//! chooser_cmd: it asks wayluck and prints the answer the way
+//! the portal wants it ("Monitor: NAME", "Window: ID"). wayluck asks the
+//! user by starting `wayluck picker` on a connection it makes, the only one
+//! allowed to see what can be shared: it shows a window
+//! with live thumbnails , which the window manager places like
+//! any other (fixed size: floating), and gives wayluck the user's choice.
 
 mod ask;
 mod capture;
+mod chooser;
 mod text;
 mod window;
 
 /// Run `wayluck pick`. The exit code: 0 with the choice printed, or 1 if
 /// the user cancelled or on an error (said on stderr): the portal shares
 /// nothing then.
-pub fn run() -> i32 {
-    match pick() {
+pub fn run_pick() -> i32 {
+    match chooser::ask() {
         Ok(Some(answer)) => {
             println!("{answer}");
             0
@@ -21,6 +24,18 @@ pub fn run() -> i32 {
         Ok(None) => 1,
         Err(e) => {
             eprintln!("wayluck pick: {e}");
+            1
+        }
+    }
+}
+
+/// Run `wayluck picker`, as wayluck starts it. The exit code: 0, or 1 on
+/// an error (said on stderr; wayluck takes it as cancelled).
+pub fn run_picker() -> i32 {
+    match picker() {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("wayluck picker: {e}");
             1
         }
     }
@@ -48,8 +63,9 @@ impl Choice {
     }
 }
 
-fn pick() -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let (monitors, _open) = ask::shareable()?;
+fn picker() -> Result<(), Box<dyn std::error::Error>> {
+    // Until answered (or dropped, on an error: cancelled).
+    let (monitors, host) = ask::shareable()?;
     if monitors.is_empty() {
         return Err("nothing to share".into());
     }
@@ -81,8 +97,11 @@ fn pick() -> Result<Option<String>, Box<dyn std::error::Error>> {
         }
     }
     let sources: Vec<_> = choices.iter().map(|c| c.source.clone()).collect();
-    let (captures, queue) = capture::Captures::start(&sources, window::THUMBNAIL_FRAMES)?;
+    let fit = window::THUMBNAIL_FRAMES;
+    let (captures, queue) =
+        capture::Captures::start(host.connection(), host.proxy(), &sources, fit)?;
     let rows = choices.iter().map(|c| c.row.clone()).collect();
-    let chosen = window::choose(rows, captures, queue)?;
-    Ok(chosen.and_then(|at| choices[at].answer.clone()))
+    let (chosen, host) = window::choose(rows, host, captures, queue)?;
+    host.answer(chosen.and_then(|at| choices[at].answer.clone()));
+    Ok(())
 }

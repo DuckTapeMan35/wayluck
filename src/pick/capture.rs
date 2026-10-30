@@ -1,13 +1,13 @@
 //! Live thumbnails: each monitor and window captured (ext-image-copy-capture;
 //! a window found by its id in ext-foreign-toplevel-list), frame after
-//! frame, small (wayluck draws them shrunk: wayluck_picker_manager_v1's
+//! frame, small (wayluck draws them shrunk: wayluck_picker_host_v1's
 //! thumbnail), over a connection of the picker's own. A frame comes into a
 //! dmabuf on wayluck's GPU when it offers one (the picker draws it from
 //! there: nothing is copied), else into shared memory. The next is asked for
 //! once the last was drawn (next), so frames come no faster than the picker
 //! shows them.
 
-use crate::protocol::picker::client::wayluck_picker_manager_v1::WayluckPickerManagerV1;
+use crate::protocol::picker::client::wayluck_picker_host_v1::WayluckPickerHostV1;
 use smithay::{
     backend::{
         allocator::{
@@ -127,14 +127,15 @@ enum Memory {
 }
 
 impl Captures {
-    /// Start capturing these sources, a thumbnail for each, its frames no
-    /// bigger than fit. The queue is to be dispatched with the captures as
-    /// its connection has events (window.rs).
+    /// Start capturing these sources, a thumbnail for each (host makes
+    /// them), its frames no bigger than fit. The queue is to be dispatched
+    /// with the captures as its connection has events (window.rs).
     pub fn start(
+        connection: Connection,
+        host: &WayluckPickerHostV1,
         sources: &[Source],
         fit: (u32, u32),
     ) -> Result<(Captures, EventQueue<Captures>), Box<dyn std::error::Error>> {
-        let connection = Connection::connect_to_env()?;
         let (globals, mut queue) = registry_queue_init::<Captures>(&connection)?;
 
         let qh = queue.handle();
@@ -145,7 +146,6 @@ impl Captures {
         let window_sources: Option<ExtForeignToplevelImageCaptureSourceManagerV1> =
             globals.bind(&qh, 1..=1, ()).ok();
         let list: Option<ExtForeignToplevelListV1> = globals.bind(&qh, 1..=1, ()).ok();
-        let picker: WayluckPickerManagerV1 = globals.bind(&qh, 1..=1, ())?;
         // Version 3: buffers made at once (create_immed).
         let linux_dmabuf = globals.bind(&qh, 3..=3, ()).ok();
         // Every output, by name (wl_output 4 says it).
@@ -183,11 +183,11 @@ impl Captures {
                         .zip(window_sources.as_ref())
                         .map(|((handle, _), manager)| manager.create_source(handle, &qh, ()))
                 }
-                Source::Workspace(id) => Some(picker.workspace_source(*id, &qh, ())),
+                Source::Workspace(id) => Some(host.workspace_source(*id, &qh, ())),
             };
             if let Some(source) = source {
                 let (w, h) = fit;
-                thumbnail.session = Some(picker.thumbnail(&source, w, h, &qh, at));
+                thumbnail.session = Some(host.thumbnail(&source, w, h, &qh, at));
                 source.destroy();
             }
             captures.thumbnails.push(thumbnail);
@@ -512,7 +512,6 @@ ignore! {
     WlBuffer, ();
     ExtOutputImageCaptureSourceManagerV1, ();
     ExtImageCaptureSourceV1, ();
-    WayluckPickerManagerV1, ();
     ZwpLinuxDmabufV1, ();
     ZwpLinuxBufferParamsV1, ();
     ExtForeignToplevelImageCaptureSourceManagerV1, ();

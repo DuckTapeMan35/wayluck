@@ -1,17 +1,21 @@
-//! What can be shared, for `wayluck pick`, xdg-desktop-portal-wlr's
-//! chooser_cmd: it asks over wayluck_picker_unstable_v1, shows the user its
-//! picker, and prints the user's choice for the portal. Nothing is shared by
-//! asking: the user decides, in the picker.
-//! Its thumbnails are captures made small here, so each holds little memory.
+//! Asking the user what to share (wayluck_picker_unstable_v1). Anyone may
+//! ask (`wayluck pick`, xdg-desktop-portal-wlr's chooser_cmd) and hears
+//! only the answer. To ask the user, wayluck starts its picker (`wayluck
+//! picker`) on a connection of its own making: only that client
+//! sees the host global, which lists what can be shared and captures it
+//! small, workspaces off screen too. The window manager
+//! is told a picker is open, and offers its workspaces first.
 
 use crate::{
     Wayluck,
     image_capture::Source,
     protocol::picker::server::{
         wayluck_pick_v1::{self, WayluckPickV1},
+        wayluck_picker_host_v1::{self, WayluckPickerHostV1},
         wayluck_picker_manager_v1::{self, WayluckPickerManagerV1},
     },
     scenes::{Scene, SceneId},
+    state::ClientState,
     windows,
 };
 use smithay::{
@@ -19,6 +23,7 @@ use smithay::{
     reexports::{
         calloop::{
             RegistrationToken,
+            channel::{Event, Sender, channel},
             timer::{TimeoutAction, Timer},
         },
         wayland_server::{
@@ -27,22 +32,31 @@ use smithay::{
         },
     },
 };
-use std::time::Duration;
+use std::{
+    os::{fd::OwnedFd, unix::net::UnixStream},
+    process::{Command, Stdio},
+    sync::Arc,
+    time::Duration,
+};
 
 /// How long a picker waits for the window manager's workspaces, at most.
 const OFFERS_PATIENCE: Duration = Duration::from_millis(200);
 
-/// Pickers asking, and the workspaces the window manager offers them.
+/// The question being asked, if one is, and the workspaces the window
+/// manager offers for it.
 #[derive(Default)]
 pub struct Picking {
-    /// Every pick not yet destroyed: while there's one, the window manager
-    /// has been told a picker is open.
-    open: Vec<WayluckPickV1>,
-    /// Those waiting for the window manager's offers.
-    waiting: Vec<WayluckPickV1>,
-    /// Until it's done offering (or out of patience).
+    /// Who asked, until they hear the answer (or go).
+    pick: Option<WayluckPickV1>,
+    /// The picker started for it, once it has bound the host.
+    host: Option<WayluckPickerHostV1>,
+    /// The window manager has been told a picker is open.
+    open: bool,
+    /// Waiting for the window manager to offer (or run out of patience).
     timer: Option<RegistrationToken>,
     offers: Vec<Offer>,
+    /// Told when a picker started exits (made with the first).
+    exited: Option<Sender<()>>,
 }
 
 /// A workspace the window manager offered: its scene, the monitor it's on,
@@ -56,30 +70,77 @@ struct Offer {
 impl Wayluck {
     pub fn picker_global(dh: &DisplayHandle) {
         dh.create_global::<Wayluck, WayluckPickerManagerV1, _>(1, ());
+        dh.create_global::<Wayluck, WayluckPickerHostV1, _>(1, ());
     }
 
-    /// Someone asks what can be shared. The window manager, if any, is
-    /// asked for its workspaces first.
+    /// Someone asks the user what to share: the picker is started, and the
+    /// window manager, if any, asked for its workspaces meanwhile.
     fn pick(&mut self, pick: WayluckPickV1) {
-        let first = self.picking.open.is_empty();
-        self.picking.open.push(pick.clone());
+        if self.picking.pick.is_some() || self.picking.open {
+            return pick.cancelled(); // one at a time
+        }
+        if let Err(e) = self.start_picker() {
+            tracing::warn!("can't start the picker: {e}");
+            return pick.cancelled();
+        }
+        self.picking.pick = Some(pick);
+        self.picking.open = true;
+        self.picking.offers.clear();
         let Some(manager) = self.wm.manager.clone() else {
-            return self.answer(&pick);
+            return;
         };
-        self.picking.waiting.push(pick);
-        if first {
-            self.picking.offers.clear();
-            manager.picker_opened();
+        manager.picker_opened();
+        let timer = Timer::from_duration(OFFERS_PATIENCE);
+        let timer = self.loop_handle.insert_source(timer, |_, _, state| {
+            state.picking.timer = None;
+            state.offers_done();
+            TimeoutAction::Drop
+        });
+        self.picking.timer = timer.ok();
+    }
+
+    /// `wayluck picker`, as a client on a connection made here: its end is
+    /// its stdin. Only it sees the host global (ClientState::picker).
+    fn start_picker(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let (ours, theirs) = UnixStream::pair()?;
+        let mut child = Command::new(std::env::current_exe()?)
+            .arg("picker")
+            .stdin(Stdio::from(OwnedFd::from(theirs)))
+            // Its window is an ordinary client's.
+            .env("WAYLAND_DISPLAY", &self.socket_name)
+            .spawn()?;
+        // Reaped when it exits, and wayluck told (in case it went before
+        // binding the host: then nothing else says so).
+        let exited = self.picker_exits()?;
+        std::thread::spawn(move || {
+            let _ = child.wait();
+            let _ = exited.send(());
+        });
+        let data = ClientState {
+            picker: true,
+            ..ClientState::default()
+        };
+        self.display_handle.insert_client(ours, Arc::new(data))?;
+        Ok(())
+    }
+
+    /// Where a thread waiting on a picker says it exited.
+    fn picker_exits(&mut self) -> Result<Sender<()>, Box<dyn std::error::Error>> {
+        if let Some(exited) = &self.picking.exited {
+            return Ok(exited.clone());
         }
-        if self.picking.timer.is_none() {
-            let timer = Timer::from_duration(OFFERS_PATIENCE);
-            let timer = self.loop_handle.insert_source(timer, |_, _, state| {
-                state.picking.timer = None;
-                state.offers_done();
-                TimeoutAction::Drop
-            });
-            self.picking.timer = timer.ok();
-        }
+        let (exited, heard) = channel();
+        self.loop_handle.insert_source(heard, |event, _, state| {
+            // Bound, it's gone already (the host went with its client).
+            if let Event::Msg(()) = event
+                && state.picking.host.is_none()
+                && state.picking.open
+            {
+                state.picker_gone();
+            }
+        })?;
+        self.picking.exited = Some(exited.clone());
+        Ok(exited)
     }
 
     /// The window manager offers a workspace.
@@ -92,60 +153,75 @@ impl Wayluck {
         });
     }
 
-    /// The window manager offered all it will (or took too long): pickers
-    /// waiting hear what can be shared.
+    /// The window manager offered all it will (or took too long): the
+    /// picker, if it's there yet, hears what can be shared.
     pub fn offers_done(&mut self) {
         if let Some(timer) = self.picking.timer.take() {
             self.loop_handle.remove(timer);
         }
-        for pick in std::mem::take(&mut self.picking.waiting) {
-            self.answer(&pick);
+        if let Some(host) = self.picking.host.clone() {
+            self.list(&host);
         }
     }
 
     /// What can be shared: the monitors, each followed by the workspaces
     /// offered on it and their windows, or with none offered, the windows
     /// it shows; topmost first.
-    fn answer(&self, pick: &WayluckPickV1) {
+    fn list(&self, host: &WayluckPickerHostV1) {
         for monitor in self.monitors() {
-            pick.monitor(monitor.name(), monitor.description());
+            host.monitor(monitor.name(), monitor.description());
             let offered: Vec<&Offer> = (self.picking.offers.iter())
                 .filter(|o| o.output == *monitor && self.scenes.exists(o.scene))
                 .collect();
             if offered.is_empty() {
                 if let Some(scene) = self.scenes.shown_on(monitor) {
-                    self.send_windows(pick, scene);
+                    self.send_windows(host, scene);
                 }
                 continue;
             }
             for offer in offered {
-                pick.workspace(offer.scene.number(), offer.name.clone());
+                host.workspace(offer.scene.number(), offer.name.clone());
                 if let Some(scene) = self.scenes.get(offer.scene) {
-                    self.send_windows(pick, scene);
+                    self.send_windows(host, scene);
                 }
             }
         }
-        pick.done();
+        host.done();
     }
 
     /// A scene's windows, topmost first.
-    fn send_windows(&self, pick: &WayluckPickV1, scene: &Scene) {
+    fn send_windows(&self, host: &WayluckPickerHostV1, scene: &Scene) {
         for (id, _) in scene.windows().rev() {
             let Some(toplevel) = self.windows.get(id).and_then(|w| w.toplevel()) else {
                 continue;
             };
             let (title, app_id) = windows::names(toplevel);
             let (title, app_id) = (title.unwrap_or_default(), app_id.unwrap_or_default());
-            pick.window(u32::from(id), title, app_id);
+            host.window(u32::from(id), title, app_id);
         }
     }
 
-    /// A picker is done: if it was the last, the window manager hears.
-    fn pick_closed(&mut self, pick: &WayluckPickV1) {
-        self.picking.waiting.retain(|p| p != pick);
-        let was_open = !self.picking.open.is_empty();
-        self.picking.open.retain(|p| p != pick);
-        if was_open && self.picking.open.is_empty() {
+    /// The picker answers: whoever asked hears (Some: chosen, None:
+    /// cancelled), if they're still there.
+    fn answer(&mut self, answer: Option<String>) {
+        let Some(pick) = self.picking.pick.take() else {
+            return;
+        };
+        match answer {
+            Some(answer) => pick.chosen(answer),
+            None => pick.cancelled(),
+        }
+    }
+
+    /// The picker is gone: whoever asked hears it was cancelled (unless it
+    /// answered), and the window manager that it closed.
+    fn picker_gone(&mut self) {
+        self.answer(None);
+        self.picking.host = None;
+        if let Some(timer) = self.picking.timer.take() {
+            self.loop_handle.remove(timer);
+        }
+        if std::mem::take(&mut self.picking.open) {
             self.picking.offers.clear();
             if let Some(manager) = &self.wm.manager {
                 manager.picker_closed();
@@ -177,12 +253,79 @@ impl Dispatch<WayluckPickerManagerV1, ()> for Wayluck {
         _dh: &DisplayHandle,
         data_init: &mut DataInit<'_, Self>,
     ) {
-        use wayluck_picker_manager_v1::Request;
-        match request {
-            Request::Pick { id } => {
-                let pick = data_init.init(id, ());
-                state.pick(pick);
+        if let wayluck_picker_manager_v1::Request::Pick { id } = request {
+            let pick = data_init.init(id, ());
+            state.pick(pick);
+        }
+    }
+}
+
+impl Dispatch<WayluckPickV1, ()> for Wayluck {
+    fn request(
+        _state: &mut Self,
+        _client: &Client,
+        _pick: &WayluckPickV1,
+        _request: wayluck_pick_v1::Request,
+        _data: &(),
+        _dh: &DisplayHandle,
+        _data_init: &mut DataInit<'_, Self>,
+    ) {
+        // Only destroy (destroyed, below, also covers the client going).
+    }
+
+    /// Whoever asked went: the picker hears, and should close.
+    fn destroyed(state: &mut Self, _client: ClientId, pick: &WayluckPickV1, _data: &()) {
+        if state.picking.pick.as_ref() == Some(pick) {
+            state.picking.pick = None;
+            if let Some(host) = &state.picking.host {
+                host.closed();
             }
+        }
+    }
+}
+
+impl GlobalDispatch<WayluckPickerHostV1, ()> for Wayluck {
+    /// The picker is here: it hears what can be shared, once the window
+    /// manager has offered its workspaces.
+    fn bind(
+        state: &mut Self,
+        _dh: &DisplayHandle,
+        _client: &Client,
+        resource: New<WayluckPickerHostV1>,
+        _data: &(),
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        let host = data_init.init(resource, ());
+        if state.picking.host.is_some() || !state.picking.open {
+            return host.closed();
+        }
+        state.picking.host = Some(host.clone());
+        if state.picking.pick.is_none() {
+            host.closed();
+        } else if state.picking.timer.is_none() {
+            state.list(&host);
+        }
+    }
+
+    /// Only the picker wayluck started sees it.
+    fn can_view(client: Client, _data: &()) -> bool {
+        client.get_data::<ClientState>().is_some_and(|c| c.picker)
+    }
+}
+
+impl Dispatch<WayluckPickerHostV1, ()> for Wayluck {
+    fn request(
+        state: &mut Self,
+        _client: &Client,
+        host: &WayluckPickerHostV1,
+        request: wayluck_picker_host_v1::Request,
+        _data: &(),
+        _dh: &DisplayHandle,
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        use wayluck_picker_host_v1::Request;
+        let mine = state.picking.host.as_ref() == Some(host);
+        match request {
             Request::Thumbnail {
                 session,
                 source,
@@ -203,25 +346,15 @@ impl Dispatch<WayluckPickerManagerV1, ()> for Wayluck {
                 };
                 data_init.init(source, captured);
             }
+            Request::Choose { answer } if mine => state.answer(Some(answer)),
+            Request::Cancel if mine => state.answer(None),
             _ => {}
         }
     }
-}
 
-impl Dispatch<WayluckPickV1, ()> for Wayluck {
-    fn request(
-        _state: &mut Self,
-        _client: &Client,
-        _pick: &WayluckPickV1,
-        _request: wayluck_pick_v1::Request,
-        _data: &(),
-        _dh: &DisplayHandle,
-        _data_init: &mut DataInit<'_, Self>,
-    ) {
-        // Only destroy.
-    }
-
-    fn destroyed(state: &mut Self, _client: ClientId, pick: &WayluckPickV1, _data: &()) {
-        state.pick_closed(pick);
+    fn destroyed(state: &mut Self, _client: ClientId, host: &WayluckPickerHostV1, _data: &()) {
+        if state.picking.host.as_ref() == Some(host) {
+            state.picker_gone();
+        }
     }
 }

@@ -1,14 +1,13 @@
-//! Asking wayluck what can be shared, over wayluck_picker_unstable_v1.
+//! The picker's connection to wayluck, made by wayluck (it's the picker's
+//! stdin), the only one that sees wayluck_picker_host_v1: what can be shared,
+//! and where the user's answer goes.
 
+use crate::protocol::picker::client::wayluck_picker_host_v1::{self, WayluckPickerHostV1};
+use std::os::{fd::AsFd, unix::net::UnixStream};
 use wayland_client::{
-    Connection, Dispatch, QueueHandle,
+    Connection, Dispatch, EventQueue, QueueHandle,
     globals::{GlobalListContents, registry_queue_init},
     protocol::wl_registry::WlRegistry,
-};
-
-use crate::protocol::picker::client::{
-    wayluck_pick_v1::{self, WayluckPickV1},
-    wayluck_picker_manager_v1::WayluckPickerManagerV1,
 };
 
 pub struct Monitor {
@@ -60,47 +59,84 @@ impl Monitor {
     }
 }
 
-/// What wayluck says can be shared, until it says that's all.
+/// What wayluck says can be shared, until it says that's all; and whether
+/// whoever asked went.
 #[derive(Default)]
 struct Asking {
     monitors: Vec<Monitor>,
     done: bool,
+    closed: bool,
 }
 
 /// The monitors the user can share, in wayluck's order, with their
-/// workspaces and windows; and the question, to keep open while the user
-/// chooses.
-pub fn shareable() -> Result<(Vec<Monitor>, Open), Box<dyn std::error::Error>> {
-    let connection = Connection::connect_to_env()?;
-    let (globals, mut queue) = registry_queue_init::<Asking>(&connection)?;
-    let manager: WayluckPickerManagerV1 = globals
+/// workspaces and windows; and the host, to answer by.
+pub fn shareable() -> Result<(Vec<Monitor>, Host), Box<dyn std::error::Error>> {
+    let given = std::io::stdin().as_fd().try_clone_to_owned()?;
+    let connection = Connection::from_socket(UnixStream::from(given)).map_err(not_started)?;
+    let (globals, mut queue) = registry_queue_init::<Asking>(&connection).map_err(not_started)?;
+    let proxy: WayluckPickerHostV1 = globals
         .bind(&queue.handle(), 1..=1, ())
-        .map_err(|_| "this compositor isn't wayluck (no wayluck_picker_manager_v1)")?;
-    let pick = manager.pick(&queue.handle(), ());
+        .map_err(|_| "wayluck didn't start this as its picker")?;
     let mut asking = Asking::default();
-    while !asking.done {
+    while !asking.done && !asking.closed {
         queue.blocking_dispatch(&mut asking)?;
     }
-    let open = Open {
+    if asking.closed {
+        return Err("nobody's asking any more".into());
+    }
+    let monitors = std::mem::take(&mut asking.monitors);
+    let host = Host {
         connection,
-        manager,
-        pick,
+        queue,
+        proxy,
+        asking,
     };
-    Ok((asking.monitors, open))
+    Ok((monitors, host))
 }
 
-/// The question, while the user is choosing: the window manager keeps the
-/// workspaces offered laid out until it's dropped.
-pub struct Open {
+/// Its stdin isn't a connection to wayluck: someone ran it by hand.
+fn not_started<E>(_: E) -> &'static str {
+    "wayluck starts the picker itself (`wayluck pick` asks it to)"
+}
+
+/// The picker's side of the question, until it answers. Dropped without
+/// answering, it's as if cancelled.
+pub struct Host {
     connection: Connection,
-    manager: WayluckPickerManagerV1,
-    pick: WayluckPickV1,
+    queue: EventQueue<Asking>,
+    proxy: WayluckPickerHostV1,
+    asking: Asking,
 }
 
-impl Drop for Open {
+impl Host {
+    /// The connection, for the thumbnails too (on their own queue).
+    pub fn connection(&self) -> Connection {
+        self.connection.clone()
+    }
+
+    pub fn proxy(&self) -> &WayluckPickerHostV1 {
+        &self.proxy
+    }
+
+    /// Has whoever asked gone? (Events already read are handled first.)
+    pub fn closed(&mut self) -> bool {
+        let _ = self.queue.dispatch_pending(&mut self.asking);
+        self.asking.closed
+    }
+
+    /// The user chose (None: nothing): wayluck hears.
+    pub fn answer(self, answer: Option<String>) {
+        match answer {
+            Some(answer) => self.proxy.choose(answer),
+            None => self.proxy.cancel(),
+        }
+        // Drop: destroyed, and sent.
+    }
+}
+
+impl Drop for Host {
     fn drop(&mut self) {
-        self.pick.destroy();
-        self.manager.destroy();
+        self.proxy.destroy();
         let _ = self.connection.flush();
     }
 }
@@ -117,30 +153,18 @@ impl Dispatch<WlRegistry, GlobalListContents> for Asking {
     }
 }
 
-impl Dispatch<WayluckPickerManagerV1, ()> for Asking {
-    fn event(
-        _: &mut Self,
-        _: &WayluckPickerManagerV1,
-        _: <WayluckPickerManagerV1 as wayland_client::Proxy>::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
-
-impl Dispatch<WayluckPickV1, ()> for Asking {
+impl Dispatch<WayluckPickerHostV1, ()> for Asking {
     fn event(
         asking: &mut Self,
-        _: &WayluckPickV1,
-        event: wayluck_pick_v1::Event,
+        _: &WayluckPickerHostV1,
+        event: wayluck_picker_host_v1::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
         match event {
-            wayluck_pick_v1::Event::Done => asking.done = true,
-            wayluck_pick_v1::Event::Monitor { name, description } => {
+            wayluck_picker_host_v1::Event::Done => asking.done = true,
+            wayluck_picker_host_v1::Event::Monitor { name, description } => {
                 asking.monitors.push(Monitor {
                     name,
                     description,
@@ -149,14 +173,14 @@ impl Dispatch<WayluckPickV1, ()> for Asking {
                 })
             }
             // The last monitor's.
-            wayluck_pick_v1::Event::Workspace { id, name } => {
+            wayluck_picker_host_v1::Event::Workspace { id, name } => {
                 if let Some(monitor) = asking.monitors.last_mut() {
                     let windows = Vec::new();
                     monitor.workspaces.push(Workspace { id, name, windows });
                 }
             }
             // The last workspace's, or the last monitor's if it has none.
-            wayluck_pick_v1::Event::Window { id, title, app_id } => {
+            wayluck_picker_host_v1::Event::Window { id, title, app_id } => {
                 let Some(monitor) = asking.monitors.last_mut() else {
                     return;
                 };
@@ -166,6 +190,7 @@ impl Dispatch<WayluckPickV1, ()> for Asking {
                     None => monitor.windows.push(window),
                 }
             }
+            wayluck_picker_host_v1::Event::Closed => asking.closed = true,
         }
     }
 }

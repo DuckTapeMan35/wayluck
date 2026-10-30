@@ -5,6 +5,7 @@
 //! Enter (or a click) chooses, Esc (or closing the window) cancels.
 
 use super::{
+    ask::Host,
     capture::{Captures, Image},
     text::Text,
 };
@@ -86,6 +87,8 @@ struct Picker {
     scroll: i32,
     /// The heading and labels drawn, for the scale they were drawn at.
     drawn: Option<(f64, Vec<GlesTexture>)>,
+    /// Where the answer goes; whoever asked may go meanwhile.
+    host: Host,
     captures: Captures,
     /// To ask for the captures' next frames.
     qh: QueueHandle<Captures>,
@@ -99,12 +102,13 @@ struct Picker {
 }
 
 /// Show rows, with captures' thumbnails: the row the user chooses, or None
-/// if they cancel.
+/// if they cancel (or whoever asked goes); and the host, to answer by.
 pub fn choose(
     rows: Vec<Row>,
+    host: Host,
     captures: Captures,
     mut queue: EventQueue<Captures>,
-) -> Result<Option<usize>, Box<dyn std::error::Error>> {
+) -> Result<(Option<usize>, Host), Box<dyn std::error::Error>> {
     let text = Text::new()?;
     let height = (HEADING + ROW * rows.len() as i32 + PADDING).min(MAX_HEIGHT);
     let attributes = Window::default_attributes()
@@ -139,6 +143,10 @@ pub fn choose(
             if std::mem::take(&mut picker.captures.fresh) {
                 picker.backend.window().request_redraw();
             }
+            // Nobody's asking any more: nothing to choose.
+            if picker.host.closed() {
+                picker.answer = Some(None);
+            }
             Ok(PostAction::Continue)
         })?;
     let mut picker = Picker {
@@ -146,6 +154,7 @@ pub fn choose(
         text,
         thumbnails: rows.iter().map(|_| None).collect(),
         rows,
+        host,
         height,
         scroll: 0,
         drawn: None,
@@ -158,7 +167,7 @@ pub fn choose(
     while picker.answer.is_none() {
         event_loop.dispatch(None, &mut picker)?;
     }
-    Ok(picker.answer.flatten())
+    Ok((picker.answer.flatten(), picker.host))
 }
 
 impl Picker {

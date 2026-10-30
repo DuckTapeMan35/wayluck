@@ -32,10 +32,12 @@ pub use state::Wayluck;
 use std::{ffi::OsStr, path::PathBuf, process::Command, time::Duration};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // `wayluck pick`: not a compositor, a client asking the running one what
-    // to share (picker.rs).
-    if std::env::args().nth(1).as_deref() == Some("pick") {
-        std::process::exit(pick::run());
+    // `wayluck pick` and `wayluck picker` aren't the compositor: clients of
+    // the running one, asking the user what to share.
+    match std::env::args().nth(1).as_deref() {
+        Some("pick") => std::process::exit(pick::run_pick()),
+        Some("picker") => std::process::exit(pick::run_picker()),
+        _ => {}
     }
 
     // Logs to stderr: stdout is the programs' it runs.

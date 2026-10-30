@@ -4,11 +4,13 @@
     SPDX-License-Identifier: GPL-3.0-or-later
   </copyright>
 
-  <description summary="what there is to share">
-    How `wayluck pick` (xdg-desktop-portal-wlr's chooser_cmd) learns what
-    the user can share, to show it in its picker. The user's choice stays
-    with the picker: it prints it for the portal. Nothing is shared by
-    asking.
+  <description summary="asking the user what to share">
+    Two halves. Any client may ask the user what to share and hear the
+    answer (wayluck_picker_manager_v1): `wayluck pick`, the chooser
+    xdg-desktop-portal-wlr runs. Only the picker wayluck starts to ask the
+    user may see what there is to share and capture it, workspaces not on
+    screen too (wayluck_picker_host_v1): no other client is shown that
+    global.
 
     Unstable: changed in place, without version bumps, until it's frozen.
   </description>
@@ -19,11 +21,45 @@
     </request>
 
     <request name="pick">
-      <description summary="what can be shared?">
-        The answer comes as events on the new object: what can be shared,
-        then done.
+      <description summary="ask the user what to share">
+        wayluck shows its picker; the answer comes on the new object. One
+        question at a time: while one is open, another is cancelled at once.
       </description>
       <arg name="id" type="new_id" interface="wayluck_pick_v1"/>
+    </request>
+  </interface>
+
+  <interface name="wayluck_pick_v1" version="1">
+    <description summary="one question to the user"/>
+
+    <request name="destroy" type="destructor">
+      <description summary="stop asking">
+        If the picker is still open, it closes, as if cancelled.
+      </description>
+    </request>
+
+    <event name="chosen">
+      <description summary="the user chose">
+        As xdg-desktop-portal-wlr's chooser_cmd prints it: "Monitor: NAME"
+        or "Window: ID" (an ext-foreign-toplevel-list identifier).
+      </description>
+      <arg name="answer" type="string"/>
+    </event>
+
+    <event name="cancelled">
+      <description summary="the user chose nothing (or the picker failed)"/>
+    </event>
+  </interface>
+
+  <interface name="wayluck_picker_host_v1" version="1">
+    <description summary="what the picker wayluck started may see and do">
+      Only the client wayluck started as its picker sees this global. On
+      bind (once the window manager has offered its workspaces) it hears
+      what can be shared: monitors, workspaces and windows, then done.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="the picker is done (as if cancelled, if it hadn't chosen)"/>
     </request>
 
     <request name="thumbnail">
@@ -32,8 +68,6 @@
         cursors), but the session's frames are no bigger than width ×
         height: the source drawn scaled down to fit, keeping its shape (or
         as it is, if it fits already). Its buffer_size events say the size.
-        For a picker's thumbnails, which would otherwise each hold a frame
-        as big as its source.
       </description>
       <arg name="session" type="new_id" interface="ext_image_copy_capture_session_v1"/>
       <arg name="source" type="object" interface="ext_image_capture_source_v1"/>
@@ -50,13 +84,16 @@
       <arg name="source" type="new_id" interface="ext_image_capture_source_v1"/>
       <arg name="workspace" type="uint"/>
     </request>
-  </interface>
 
-  <interface name="wayluck_pick_v1" version="1">
-    <description summary="what can be shared, once"/>
+    <request name="choose">
+      <description summary="the user chose">
+        The answer for whoever asked (wayluck_pick_v1.chosen).
+      </description>
+      <arg name="answer" type="string"/>
+    </request>
 
-    <request name="destroy" type="destructor">
-      <description summary="done with it"/>
+    <request name="cancel">
+      <description summary="the user chose nothing"/>
     </request>
 
     <event name="monitor">
@@ -91,6 +128,12 @@
 
     <event name="done">
       <description summary="that's all there is"/>
+    </event>
+
+    <event name="closed">
+      <description summary="nobody's asking any more">
+        Whoever asked went away: the picker should close (and destroy this).
+      </description>
     </event>
   </interface>
 </protocol>
