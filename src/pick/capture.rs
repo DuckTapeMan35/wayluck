@@ -357,6 +357,8 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, usize> for Captures {
         let t = &mut captures.thumbnails[*at];
         match event {
             Event::Ready => {
+                frame.destroy();
+                t.frame = None;
                 let Some(buffer) = &t.buffer else { return };
                 t.image = Some(match &buffer.memory {
                     Memory::Dmabuf(dmabuf) => Image::Dmabuf(dmabuf.clone()),
