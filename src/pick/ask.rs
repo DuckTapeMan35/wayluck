@@ -68,8 +68,9 @@ struct Asking {
 }
 
 /// The monitors the user can share, in wayluck's order, with their
-/// workspaces and windows.
-pub fn shareable() -> Result<Vec<Monitor>, Box<dyn std::error::Error>> {
+/// workspaces and windows; and the question, to keep open while the user
+/// chooses.
+pub fn shareable() -> Result<(Vec<Monitor>, Open), Box<dyn std::error::Error>> {
     let connection = Connection::connect_to_env()?;
     let (globals, mut queue) = registry_queue_init::<Asking>(&connection)?;
     let manager: WayluckPickerManagerV1 = globals
@@ -80,9 +81,28 @@ pub fn shareable() -> Result<Vec<Monitor>, Box<dyn std::error::Error>> {
     while !asking.done {
         queue.blocking_dispatch(&mut asking)?;
     }
-    pick.destroy();
-    manager.destroy();
-    Ok(asking.monitors)
+    let open = Open {
+        connection,
+        manager,
+        pick,
+    };
+    Ok((asking.monitors, open))
+}
+
+/// The question, while the user is choosing: the window manager keeps the
+/// workspaces offered laid out until it's dropped.
+pub struct Open {
+    connection: Connection,
+    manager: WayluckPickerManagerV1,
+    pick: WayluckPickV1,
+}
+
+impl Drop for Open {
+    fn drop(&mut self) {
+        self.pick.destroy();
+        self.manager.destroy();
+        let _ = self.connection.flush();
+    }
 }
 
 impl Dispatch<WlRegistry, GlobalListContents> for Asking {

@@ -178,8 +178,14 @@ impl Picker {
             }
             WinitEvent::Input(InputEvent::PointerMotionAbsolute { event }) => {
                 let size = self.size().to_f64().to_logical(self.scale());
-                self.pointer = Some(event.position_transformed(size.to_i32_round()));
-                self.select_hovered();
+                let at = event.position_transformed(size.to_i32_round());
+                // Only a pointer moving over it selects: not one the
+                // window opened under, nor one told again where it is.
+                let moved = self.pointer.is_some_and(|p| p != at);
+                self.pointer = Some(at);
+                if moved {
+                    self.select_hovered();
+                }
             }
             WinitEvent::Input(InputEvent::PointerAxis { event }) => {
                 let by = (event.amount(Axis::Vertical))

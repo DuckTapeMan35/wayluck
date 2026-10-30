@@ -49,7 +49,7 @@ impl Choice {
 }
 
 fn pick() -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let monitors = ask::shareable()?;
+    let (monitors, _open) = ask::shareable()?;
     if monitors.is_empty() {
         return Err("nothing to share".into());
     }
