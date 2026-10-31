@@ -323,6 +323,8 @@ fn draw_or_wait(state: &mut Wayluck, udev: &Rc<RefCell<Udev>>) {
     let elements = render::elements(state, output, &mut renderer);
     let rendered =
         compositor.render_frame(&mut renderer, &elements, render::CLEAR, FrameFlags::DEFAULT);
+    let changed = matches!(&rendered, Ok(frame) if !frame.is_empty);
+    tracing::debug!("drew a frame: changed {changed}");
     let shown = match rendered {
         Ok(frame) if frame.is_empty => false,
         Ok(_) => match compositor.queue_frame(()) {
@@ -339,6 +341,7 @@ fn draw_or_wait(state: &mut Wayluck, udev: &Rc<RefCell<Udev>>) {
     };
     // Screenshots and screen sharing waiting for this frame.
     screencopy::capture_virtual(state, &mut renderer);
+    image_capture::capture_frames(state, &mut renderer);
     image_capture::capture_frames(state, &mut renderer);
     let output = output.clone();
     u.in_flight = shown;

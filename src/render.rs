@@ -290,7 +290,7 @@ impl Border {
             // Its surfaces are new to the damage tracker: drawn again whole.
             self.clip_ids.clear();
         }
-        if self.width != width as i32 || self.colors != colors {
+        if self.width != width as i32 || self.colors != colors || self.radius != radius {
             self.width = width as i32;
             self.colors = colors;
             self.radius = radius;
