@@ -314,10 +314,12 @@ impl Dispatch<WayluckWmTransactionV1, Transaction> for Wayluck {
                 right,
                 bottom,
                 left,
+                radius,
             } => Some(Change::Border(
                 id_of(&window),
                 width,
                 [top, right, bottom, left],
+                radius,
             )),
             Request::Tiled { window, edges } => Some(Change::Tiled(id_of(&window), edges)),
             Request::Fullscreen { window, fullscreen } => {

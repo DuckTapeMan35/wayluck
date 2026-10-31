@@ -78,6 +78,8 @@ pub struct Wayluck {
     pub pending: Option<Pending>,
     /// Screenshots and screen-sharing frames waiting for a frame drawn
     pub screencopies: Vec<screencopy::Copy>,
+    /// How many frames of each output changed something.
+    pub changes: Vec<(Output, u64)>,
     /// Captures of outputs and windows, the standard way.
     pub image_capture: ImageCapture,
     /// Every window, for clients that list them.
@@ -172,6 +174,7 @@ impl Wayluck {
             keys_to_wm: Vec::new(),
             pending: None,
             screencopies: Vec::new(),
+            changes: Vec::new(),
             image_capture: ImageCapture::default(),
             toplevel_list: ToplevelList::default(),
             picking: Picking::default(),
@@ -254,6 +257,7 @@ fn listen(mut display: Display<Wayluck>, event_loop: &mut EventLoop<Wayluck>) ->
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
     pub picker: bool,
+    pub copied: std::sync::Mutex<Vec<(Output, u64)>>,
 }
 
 impl ClientData for ClientState {

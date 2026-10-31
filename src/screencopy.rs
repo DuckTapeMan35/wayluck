@@ -8,6 +8,8 @@
 use crate::{
     Wayluck,
     render::{self, Element},
+    rounded::AsGles,
+    state::ClientState,
 };
 use smithay::{
     backend::{
@@ -180,10 +182,10 @@ impl Dispatch<ZwlrScreencopyFrameV1, Option<FrameData>> for Wayluck {
             with_damage,
         });
         state.capture_activity(&data.output);
-        // A plain copy doesn't wait for something to change.
-        if !with_damage {
-            state.queue_redraw();
-        }
+        // A frame is drawn to see: a plain copy doesn't wait, and one with
+        // damage gets what changed since this client's last copy, even
+        // while it had none waiting
+        state.queue_redraw();
     }
 }
 
@@ -225,11 +227,34 @@ pub fn fits(buffer: &WlBuffer, size: Size<i32, Physical>) -> bool {
 /// it for the clients waiting on it.
 pub fn capture<R>(state: &mut Wayluck, output: &Output, renderer: &mut R, changed: bool)
 where
-    R: Renderer + ImportAll + ImportMem + Offscreen<GlesRenderbuffer> + ExportMem + Bind<Dmabuf>,
+    R: Renderer
+        + ImportAll
+        + ImportMem
+        + Offscreen<GlesRenderbuffer>
+        + ExportMem
+        + Bind<Dmabuf>
+        + AsGles,
     R::TextureId: Clone + Texture + Send + 'static,
     R::Error: 'static,
 {
-    let mine = |c: &Copy| c.is_of(output) && (changed || !c.with_damage);
+    // How many frames of output have changed something, this one too.
+    let at = match state.changes.iter().position(|(o, _)| o == output) {
+        Some(at) => at,
+        None => {
+            state.changes.push((output.clone(), 0));
+            state.changes.len() - 1
+        }
+    };
+    if changed {
+        state.changes[at].1 += 1;
+    }
+    let count = state.changes[at].1;
+    // With damage: once there's a change its client hasn't copied (its
+    // first copy of output: at once).
+    let mine = |c: &Copy| {
+        c.is_of(output) && (!c.with_damage || c.copied(output).is_none_or(|seen| seen < count))
+    };
+
     let (now, later) = std::mem::take(&mut state.screencopies)
         .into_iter()
         .partition(mine);
@@ -237,6 +262,7 @@ where
     if now.is_empty() {
         return;
     }
+
     let elements = render::elements(state, output, renderer);
     for copy in now {
         let Some(Some(data)) = copy.frame.data::<Option<FrameData>>() else {
@@ -255,6 +281,7 @@ where
         match copy_into(renderer, size, scale, &drawn, data.region, &copy.buffer) {
             Ok(()) => {
                 copy.frame.flags(zwlr_screencopy_frame_v1::Flags::empty());
+                copy.copied_now(output, count);
                 if copy.with_damage {
                     let size = data.region.size;
                     copy.frame.damage(0, 0, size.w as u32, size.h as u32);
@@ -277,7 +304,13 @@ where
 /// copy_with_damage, only once something in it changed since its last.
 pub fn capture_virtual<R>(state: &mut Wayluck, renderer: &mut R)
 where
-    R: Renderer + ImportAll + ImportMem + Offscreen<GlesRenderbuffer> + ExportMem + Bind<Dmabuf>,
+    R: Renderer
+        + ImportAll
+        + ImportMem
+        + Offscreen<GlesRenderbuffer>
+        + ExportMem
+        + Bind<Dmabuf>
+        + AsGles,
     R::TextureId: Clone + Texture + Send + 'static,
     R::Error: 'static,
 {
@@ -297,6 +330,30 @@ where
 }
 
 impl Copy {
+    /// Its client's last copy of output: the change count then (None:
+    /// it never copied it).
+    fn copied(&self, output: &Output) -> Option<u64> {
+        let client = self.frame.client()?;
+        let data = client.get_data::<ClientState>()?;
+        let copied = data.copied.lock().unwrap();
+        copied.iter().find(|(o, _)| o == output).map(|(_, n)| *n)
+    }
+
+    /// Its client copied output now, at change count.
+    fn copied_now(&self, output: &Output, count: u64) {
+        let Some(client) = self.frame.client() else {
+            return;
+        };
+        let Some(data) = client.get_data::<ClientState>() else {
+            return;
+        };
+        let mut copied = data.copied.lock().unwrap();
+        match copied.iter_mut().find(|(o, _)| o == output) {
+            Some((_, n)) => *n = count,
+            None => copied.push((output.clone(), count)),
+        }
+    }
+
     /// Is it a copy of output?
     fn is_of(&self, output: &Output) -> bool {
         let data = self
@@ -386,7 +443,13 @@ pub fn copy_into<R, E>(
     buffer: &WlBuffer,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
-    R: Renderer + ImportAll + ImportMem + Offscreen<GlesRenderbuffer> + ExportMem + Bind<Dmabuf>,
+    R: Renderer
+        + ImportAll
+        + ImportMem
+        + Offscreen<GlesRenderbuffer>
+        + ExportMem
+        + Bind<Dmabuf>
+        + AsGles,
     R::TextureId: Clone + Texture + Send + 'static,
     R::Error: 'static,
     E: RenderElement<R>,
@@ -440,7 +503,7 @@ fn draw_into<R, E>(
     mut dmabuf: Dmabuf,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
-    R: Renderer + ImportAll + ImportMem + Bind<Dmabuf>,
+    R: Renderer + ImportAll + ImportMem + Bind<Dmabuf> + AsGles,
     R::TextureId: Clone + Texture + Send + 'static,
     R::Error: 'static,
     E: RenderElement<R>,

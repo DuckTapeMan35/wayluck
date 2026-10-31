@@ -1,6 +1,10 @@
 //! Drawing a frame, whatever the backend: nested (winit) or on hardware (DRM).
 
-use crate::{Wayluck, layers::Side};
+use crate::{
+    Wayluck,
+    layers::Side,
+    rounded::{self, AsGles, BorderElement, ClippedSurface, Shaders},
+};
 use smithay::{
     backend::renderer::{
         Color32F, ImportAll, ImportMem, Renderer, Texture,
@@ -8,11 +12,11 @@ use smithay::{
         element::{
             AsRenderElements, Kind,
             memory::MemoryRenderBufferRenderElement,
-            solid::{SolidColorBuffer, SolidColorRenderElement},
-            surface::WaylandSurfaceRenderElement,
+            surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
         },
+        gles::element::PixelShaderElement,
     },
-    desktop::layer_map_for_output,
+    desktop::{PopupManager, Window, layer_map_for_output},
     output::Output,
     render_elements,
     utils::{Logical, Physical, Point, Rectangle, Scale},
@@ -28,9 +32,10 @@ pub const CLEAR: [f32; 4] = [0.1, 0.1, 0.12, 1.0];
 
 render_elements! {
     /// Anything wayluck draws: clients' surfaces, and borders.
-    pub Element<R> where R: ImportAll + ImportMem;
+    pub Element<R> where R: ImportAll + ImportMem + AsGles;
     Surface = WaylandSurfaceRenderElement<R>,
-    Border = SolidColorRenderElement,
+    Clipped = ClippedSurface<R>,
+    Border = BorderElement,
     Cursor = MemoryRenderBufferRenderElement<R>,
 }
 
@@ -46,7 +51,7 @@ pub fn render_output<R>(
     age: usize,
 ) -> Result<Damage, DamageError<R::Error>>
 where
-    R: Renderer + ImportAll + ImportMem,
+    R: Renderer + ImportAll + ImportMem + AsGles,
     R::TextureId: Clone + Texture + Send + 'static,
 {
     // Front to back: the top window first, its border just behind it, so a
@@ -61,7 +66,7 @@ where
 /// then wallpapers and what else is below windows. Each backend draws these its own way.
 pub fn elements<R>(state: &mut Wayluck, output: &Output, renderer: &mut R) -> Vec<Element<R>>
 where
-    R: Renderer + ImportAll + ImportMem,
+    R: Renderer + ImportAll + ImportMem + AsGles,
     R::TextureId: Clone + Texture + Send + 'static,
 {
     let Some(area) = state.space.output_geometry(output) else {
@@ -98,13 +103,13 @@ where
         let Some(window) = state.windows.get(id).cloned() else {
             continue;
         };
-        let drawn_at = (at - window.geometry().loc).to_physical_precise_round(scale);
-        elements.extend(window.render_elements::<Element<R>>(renderer, drawn_at, scale, 1.0));
+        let radius = state.windows.border_mut(id).map_or(0, |b| b.radius);
+        elements.extend(window_elements(renderer, &window, at, scale, radius));
         if let Some(border) = state.windows.border_mut(id) {
             let content = Rectangle::new(at, window.geometry().size);
             elements.extend(
                 border
-                    .elements(content, Point::default(), scale)
+                    .element(renderer, content, Point::default())
                     .map(Element::Border),
             );
         }
@@ -118,6 +123,66 @@ where
     elements
 }
 
+/// A window, its rectangle's top left at `at` (on the output): its popups,
+/// then its surfaces with the rectangle's corners cut off, rounded radius pixels.
+pub fn window_elements<R>(
+    renderer: &mut R,
+    window: &Window,
+    at: Point<i32, Logical>,
+    scale: Scale<f64>,
+    radius: u32,
+) -> Vec<Element<R>>
+where
+    R: Renderer + ImportAll + ImportMem + AsGles,
+    R::TextureId: Clone + Texture + Send + 'static,
+{
+    let corner = window.geometry().loc;
+    let drawn_at = (at - corner).to_physical_precise_round(scale);
+    let Some(toplevel) = window.toplevel() else {
+        return window.render_elements(renderer, drawn_at, scale, 1.0);
+    };
+    let surface = toplevel.wl_surface();
+    let mut elements = Vec::new();
+    // Popups first (they're above), whole.
+    for (popup, offset) in PopupManager::popups_for_surface(surface) {
+        let popup_at =
+            drawn_at + (corner + offset - popup.geometry().loc).to_physical_precise_round(scale);
+        let popup: Vec<WaylandSurfaceRenderElement<R>> = render_elements_from_surface_tree(
+            renderer,
+            popup.wl_surface(),
+            popup_at,
+            scale,
+            1.0,
+            Kind::Unspecified,
+        );
+        elements.extend(popup.into_iter().map(Element::Surface));
+    }
+    let surfaces: Vec<WaylandSurfaceRenderElement<R>> = render_elements_from_surface_tree(
+        renderer,
+        surface,
+        drawn_at,
+        scale,
+        1.0,
+        Kind::Unspecified,
+    );
+    let Some(shaders) = Shaders::get(renderer).filter(|_| radius > 0) else {
+        elements.extend(surfaces.into_iter().map(Element::Surface));
+        return elements;
+    };
+    let rect = Rectangle::new(at, window.geometry().size).to_physical_precise_round(scale);
+    let radius = radius as f64 * scale.x;
+    elements.extend(surfaces.into_iter().map(|s| {
+        Element::Clipped(ClippedSurface::new(
+            s,
+            shaders.clip.clone(),
+            scale,
+            rect,
+            radius,
+        ))
+    }));
+    elements
+}
+
 /// The layer surfaces of `layers` on output (with their popups), front first.
 fn layer_elements<R>(
     output: &Output,
@@ -126,7 +191,7 @@ fn layer_elements<R>(
     layers: &[Layer],
 ) -> Vec<Element<R>>
 where
-    R: Renderer + ImportAll + ImportMem,
+    R: Renderer + ImportAll + ImportMem + AsGles,
     R::TextureId: Clone + Texture + Send + 'static,
 {
     let map = layer_map_for_output(output);
@@ -169,57 +234,76 @@ pub fn frame_done(state: &mut Wayluck, output: &Output) {
 }
 
 /// A window's border, drawn around it: outside what it shows, so it fits
-/// whatever size the client really drew at.
+/// whatever size the client really drew at. Its corners are rounded.
 pub struct Border {
     width: i32,
-    /// Top, right, bottom, left. Kept from frame to frame, so the damage
-    /// tracker knows when a side really changed.
-    sides: [SolidColorBuffer; 4],
+    /// Top, right, bottom, left: 0xAARRGGBB.
+    colors: [u32; 4],
+    /// Drawn by the border shader (rounded.rs): kept from frame to frame,
+    /// so the damage tracker knows when it really changed. Made when it's
+    /// first drawn.
+    shader: Option<PixelShaderElement>,
+    /// How round the window's corners are, and the border's with them.
+    pub radius: u32,
+    /// Its width or colours changed since the shader was told.
+    changed: bool,
 }
 
 impl Border {
     /// width pixels wide; colours 0xAARRGGBB, top, right, bottom, left.
-    pub fn new(width: u32, colors: [u32; 4]) -> Self {
-        let mut border = Self {
-            width: 0,
-            sides: Default::default(),
-        };
-        border.set(width, colors);
-        border
-    }
-
-    pub fn set(&mut self, width: u32, colors: [u32; 4]) {
-        self.width = width as i32;
-        for (side, color) in self.sides.iter_mut().zip(colors) {
-            side.set_color(argb(color));
+    pub fn new(width: u32, colors: [u32; 4], radius: u32) -> Self {
+        Self {
+            width: width as i32,
+            colors,
+            shader: None,
+            radius,
+            changed: true,
         }
     }
 
-    /// Its sides around content (in global coordinates), on an output
-    /// whose top left is origin.
-    fn elements(
+    pub fn set(&mut self, width: u32, colors: [u32; 4], radius: u32) {
+        if self.width != width as i32 || self.colors != colors {
+            self.width = width as i32;
+            self.colors = colors;
+            self.radius = radius;
+            self.changed = true;
+        }
+    }
+
+    /// It around content (in global coordinates), on an output whose top
+    /// left is origin; None if it has no width (or can't be drawn).
+    fn element<R: AsGles>(
         &mut self,
+        renderer: &mut R,
         content: Rectangle<i32, Logical>,
         origin: Point<i32, Logical>,
-        scale: Scale<f64>,
-    ) -> impl Iterator<Item = SolidColorRenderElement> + '_ {
-        let w = self.width;
-        let (x, y, cw, ch) = (content.loc.x, content.loc.y, content.size.w, content.size.h);
-        let rects = [
-            Rectangle::new((x - w, y - w).into(), (cw + 2 * w, w).into()),
-            Rectangle::new((x + cw, y).into(), (w, ch).into()),
-            Rectangle::new((x - w, y + ch).into(), (cw + 2 * w, w).into()),
-            Rectangle::new((x - w, y).into(), (w, ch).into()),
-        ];
-        self.sides
-            .iter_mut()
-            .zip(rects)
-            .filter(move |_| w > 0)
-            .map(move |(side, rect)| {
-                side.resize(rect.size);
-                let at = (rect.loc - origin).to_physical_precise_round(scale);
-                SolidColorRenderElement::from_buffer(side, at, scale, 1.0, Kind::Unspecified)
-            })
+    ) -> Option<BorderElement> {
+        if self.width <= 0 {
+            return None;
+        }
+        let content = Rectangle::new(content.loc - origin, content.size);
+        let area = rounded::border_area(content, self.width);
+        let uniforms = rounded::border_uniforms(
+            self.radius as f32,
+            self.width as f32,
+            self.colors.map(|c| argb(c).components()),
+        );
+        match &mut self.shader {
+            Some(shader) => {
+                shader.resize(area, None);
+                if self.changed {
+                    shader.update_uniforms(uniforms);
+                }
+            }
+            None => {
+                let program = Shaders::get(renderer)?.border;
+                let shader =
+                    PixelShaderElement::new(program, area, None, 1.0, uniforms, Kind::Unspecified);
+                self.shader = Some(shader);
+            }
+        }
+        self.changed = false;
+        self.shader.clone().map(BorderElement)
     }
 }
 

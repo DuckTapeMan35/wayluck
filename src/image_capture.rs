@@ -20,6 +20,7 @@
 use crate::{
     Wayluck,
     render::{self, Element},
+    rounded::AsGles,
     scenes::SceneId,
     screencopy,
     windows::WindowId,
@@ -336,7 +337,13 @@ fn send_constraints(
 /// first, at once; a later one if its source changed since.
 pub fn capture_frames<R>(state: &mut Wayluck, renderer: &mut R)
 where
-    R: Renderer + ImportAll + ImportMem + Offscreen<GlesRenderbuffer> + ExportMem + Bind<Dmabuf>,
+    R: Renderer
+        + ImportAll
+        + ImportMem
+        + Offscreen<GlesRenderbuffer>
+        + ExportMem
+        + Bind<Dmabuf>
+        + AsGles,
     R::TextureId: Clone + Texture + Send + 'static,
     R::Error: 'static,
 {
@@ -416,7 +423,7 @@ fn source_elements<R>(
     cursors: bool,
 ) -> (Vec<Element<R>>, f64)
 where
-    R: Renderer + ImportAll + ImportMem,
+    R: Renderer + ImportAll + ImportMem + AsGles,
     R::TextureId: Clone + Texture + Send + 'static,
 {
     match source {
@@ -442,13 +449,14 @@ where
             };
             // Topmost first, as drawing wants them.
             let windows: Vec<_> = (scene.windows().rev())
-                .filter_map(|(w, at)| Some((state.windows.get(w)?.clone(), at)))
+                .filter_map(|(w, at)| {
+                    let radius = state.windows.border_mut(w).map_or(0, |b| b.radius);
+                    Some((state.windows.get(w)?.clone(), at, radius))
+                })
                 .collect();
             let elements = (windows.into_iter())
-                .flat_map(|(window, at)| {
-                    let at = at - window.geometry().loc;
-                    let at = Point::<i32, Physical>::from((at.x, at.y));
-                    window.render_elements(renderer, at, Scale::from(1.0), 1.0)
+                .flat_map(|(window, at, radius)| {
+                    render::window_elements(renderer, &window, at, Scale::from(1.0), radius)
                 })
                 .collect();
             (elements, 1.0)

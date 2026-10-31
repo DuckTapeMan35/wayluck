@@ -152,9 +152,9 @@ pub enum Change {
     SceneSize(SceneId, Size<i32, Logical>),
     /// Give a window the keyboard (None: no window has it).
     Focus(Option<WindowId>),
-    /// Draw a border around a window: its width, and its colours (0xAARRGGBB;
-    /// top, right, bottom, left).
-    Border(WindowId, u32, [u32; 4]),
+    /// Draw a border around a window: its width, its colours (0xAARRGGBB;
+    /// top, right, bottom, left) and its radius.
+    Border(WindowId, u32, [u32; 4], u32),
     /// Tell a window which of its edges are tiled (the protocol's edges bits).
     Tiled(WindowId, u32),
     /// Tell a window whether it's fullscreen.
@@ -204,7 +204,7 @@ impl Wayluck {
                 Change::Place(_, id, _)
                 | Change::Hide(id)
                 | Change::Focus(Some(id))
-                | Change::Border(id, _, _)
+                | Change::Border(id, ..)
                 | Change::Fullscreen(id, _)
                 | Change::Tiled(id, _) => *id,
                 Change::Focus(None) | Change::Show(..) | Change::SceneSize(..) => continue,
@@ -325,13 +325,13 @@ impl Wayluck {
             match change {
                 Change::Place(..) | Change::Hide(_) | Change::Show(..) | Change::SceneSize(..) => {}
                 Change::Focus(id) => self.focus(id.filter(|id| self.windows.get(*id).is_some())),
-                Change::Border(id, width, colors) => {
+                Change::Border(id, width, colors, radius) => {
                     if self.windows.get(id).is_some() {
                         self.windows
                             .borders
                             .entry(id)
-                            .and_modify(|b| b.set(width, colors))
-                            .or_insert_with(|| Border::new(width, colors));
+                            .and_modify(|b| b.set(width, colors, radius))
+                            .or_insert_with(|| Border::new(width, colors, radius));
                     }
                 }
                 Change::Fullscreen(id, on) => {

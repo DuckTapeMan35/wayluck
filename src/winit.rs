@@ -68,6 +68,11 @@ pub fn init(
     // Redraws only what changed since the last frame (nothing yet but the clear).
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
 
+    // What changed since the last frame drawn, for screen sharing: the
+    // window's damage is since its buffer's age (all of it, when that's
+    // unknown, as after a frame that wasn't shown).
+    let mut changes = OutputDamageTracker::from_output(&output);
+
     dmabuf(state, &backend);
 
     // Frames are drawn when something changed (Wayluck::queue_redraw), not
@@ -126,7 +131,14 @@ pub fn init(
                     }
                     Err(e) => tracing::warn!("rendering: {e}"),
                 }
+
+                // Did anything change since the last frame? (Not the damage
+                // drawn above: that's since the buffer's age.)
+                let elements = render::elements(state, &output, backend.renderer());
+                let changed = matches!(changes.damage_output(1, &elements),
+                    Ok((Some(d), _)) if !d.is_empty());
                 // Screenshots and screen sharing waiting for this frame.
+                screencopy::capture(state, &output, backend.renderer(), changed);
                 screencopy::capture_virtual(state, backend.renderer());
                 image_capture::capture_frames(state, backend.renderer());
                 // Clients waiting to draw again may now (no more frames are

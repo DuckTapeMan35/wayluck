@@ -11,6 +11,7 @@ mod picker;
 mod popups;
 mod protocol;
 mod render;
+mod rounded;
 mod scenes;
 mod screencopy;
 mod state;
