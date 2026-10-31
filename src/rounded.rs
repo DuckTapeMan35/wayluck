@@ -21,6 +21,7 @@ use smithay::{
     },
     utils::{Buffer, Logical, Physical, Rectangle, Scale, Size, Transform},
 };
+use std::collections::HashMap;
 
 /// A renderer that draws with GLES underneath: wayluck's shaders can draw
 /// with it.
@@ -217,11 +218,17 @@ pub struct ClippedSurface<R: Renderer> {
     scale: Scale<f64>,
     window: Rectangle<i32, Physical>,
     radius: f64,
+    /// Its id while the window's corners keep their shape.
+    id: Id,
 }
+
+/// The ids a window's surfaces are drawn under, clipped, since its radius last changed
+pub type ClipIds = HashMap<Id, Id>;
 
 impl<R: Renderer + ImportAll> ClippedSurface<R> {
     pub fn new(
         inner: WaylandSurfaceRenderElement<R>,
+        id: Id,
         program: GlesTexProgram,
         scale: Scale<f64>,
         window: Rectangle<i32, Physical>,
@@ -229,6 +236,7 @@ impl<R: Renderer + ImportAll> ClippedSurface<R> {
     ) -> Self {
         Self {
             inner,
+            id,
             program,
             scale,
             window,
@@ -251,7 +259,7 @@ impl<R: Renderer + ImportAll> ClippedSurface<R> {
 
 impl<R: Renderer + ImportAll> Element for ClippedSurface<R> {
     fn id(&self) -> &Id {
-        self.inner.id()
+        &self.id
     }
     fn current_commit(&self) -> CommitCounter {
         self.inner.current_commit()
@@ -272,11 +280,14 @@ impl<R: Renderer + ImportAll> Element for ClippedSurface<R> {
     ) -> DamageSet<i32, Physical> {
         self.inner.damage_since(scale, commit)
     }
-    /// What the surface says is opaque, but not the corners: what's under
-    /// them shows.
+    /// What the surface says is opaque, inside the window's rectangle, but
+    /// not its corners: what's under those shows.
     fn opaque_regions(&self, scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
         let corners = self.corners(scale);
+        let at = self.inner.geometry(scale).loc;
+        let window = Rectangle::new(self.window.loc - at, self.window.size);
         (self.inner.opaque_regions(scale).into_iter())
+            .filter_map(|r| r.intersection(window))
             .flat_map(|r| r.subtract_rects(corners))
             .collect()
     }

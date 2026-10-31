@@ -3,14 +3,14 @@
 use crate::{
     Wayluck,
     layers::Side,
-    rounded::{self, AsGles, BorderElement, ClippedSurface, Shaders},
+    rounded::{self, AsGles, BorderElement, ClipIds, ClippedSurface, Shaders},
 };
 use smithay::{
     backend::renderer::{
         Color32F, ImportAll, ImportMem, Renderer, Texture,
         damage::{Error as DamageError, OutputDamageTracker},
         element::{
-            AsRenderElements, Kind,
+            AsRenderElements, Element as _, Id, Kind,
             memory::MemoryRenderBufferRenderElement,
             surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
         },
@@ -103,16 +103,26 @@ where
         let Some(window) = state.windows.get(id).cloned() else {
             continue;
         };
-        let radius = state.windows.border_mut(id).map_or(0, |b| b.radius);
-        elements.extend(window_elements(renderer, &window, at, scale, radius));
-        if let Some(border) = state.windows.border_mut(id) {
-            let content = Rectangle::new(at, window.geometry().size);
-            elements.extend(
-                border
-                    .element(renderer, content, Point::default())
-                    .map(Element::Border),
-            );
-        }
+        // The window, then its border behind it (with its corners' radius).
+        let Some(border) = state.windows.border_mut(id) else {
+            elements.extend(window_elements(renderer, &window, at, scale, 0, None));
+            continue;
+        };
+        let ids = Some(&mut border.clip_ids);
+        elements.extend(window_elements(
+            renderer,
+            &window,
+            at,
+            scale,
+            border.radius,
+            ids,
+        ));
+        let content = Rectangle::new(at, window.geometry().size);
+        elements.extend(
+            border
+                .element(renderer, content, Point::default())
+                .map(Element::Border),
+        );
     }
 
     let below = state.layers(output, Side::Below);
@@ -131,6 +141,7 @@ pub fn window_elements<R>(
     at: Point<i32, Logical>,
     scale: Scale<f64>,
     radius: u32,
+    mut ids: Option<&mut ClipIds>,
 ) -> Vec<Element<R>>
 where
     R: Renderer + ImportAll + ImportMem + AsGles,
@@ -171,15 +182,25 @@ where
     };
     let rect = Rectangle::new(at, window.geometry().size).to_physical_precise_round(scale);
     let radius = radius as f64 * scale.x;
+    // Each surface keeps its id from frame to frame; those gone are dropped.
+    let mut old = ids.as_deref_mut().map(std::mem::take).unwrap_or_default();
+    let mut kept = ClipIds::new();
     elements.extend(surfaces.into_iter().map(|s| {
+        let own = s.id().clone();
+        let id = old.remove(&own).unwrap_or_else(Id::new);
+        kept.insert(own, id.clone());
         Element::Clipped(ClippedSurface::new(
             s,
+            id,
             shaders.clip.clone(),
             scale,
             rect,
             radius,
         ))
     }));
+    if let Some(ids) = ids {
+        *ids = kept;
+    }
     elements
 }
 
@@ -245,6 +266,8 @@ pub struct Border {
     shader: Option<PixelShaderElement>,
     /// How round the window's corners are, and the border's with them.
     pub radius: u32,
+    /// The ids its surfaces are drawn under, while radius stays the same.
+    pub clip_ids: ClipIds,
     /// Its width or colours changed since the shader was told.
     changed: bool,
 }
@@ -257,11 +280,16 @@ impl Border {
             colors,
             shader: None,
             radius,
+            clip_ids: ClipIds::new(),
             changed: true,
         }
     }
 
     pub fn set(&mut self, width: u32, colors: [u32; 4], radius: u32) {
+        if self.radius != radius {
+            // Its surfaces are new to the damage tracker: drawn again whole.
+            self.clip_ids.clear();
+        }
         if self.width != width as i32 || self.colors != colors {
             self.width = width as i32;
             self.colors = colors;

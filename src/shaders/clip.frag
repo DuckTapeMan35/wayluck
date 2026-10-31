@@ -50,13 +50,12 @@ void main() {
     color = color * alpha;
 #endif
 
-    // Only the corners of the window's rectangle are cut off (smoothed
-    // over a pixel): what the client draws outside it (shadows) stays.
+    // Only what's inside the window's rectangle, with its corners rounded,
+    // is drawn (smoothed over a pixel): what a client draws outside it
+    // (shadows, an outline) would cover the border.
     vec2 p = v_coords * to_window_scale + to_window_offset;
-    if (p.x >= 0.0 && p.y >= 0.0 && p.x <= window_size.x && p.y <= window_size.y) {
-        vec2 c = window_size / 2.0;
-        color = color * clamp(0.5 - outside(p - c, c, radius), 0.0, 1.0);
-    }
+    vec2 c = window_size / 2.0;
+    color = color * clamp(0.5 - outside(p - c, c, radius), 0.0, 1.0);
 
 #if defined(DEBUG_FLAGS)
     if (tint == 1.0)

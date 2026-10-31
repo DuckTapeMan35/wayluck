@@ -456,7 +456,7 @@ where
                 .collect();
             let elements = (windows.into_iter())
                 .flat_map(|(window, at, radius)| {
-                    render::window_elements(renderer, &window, at, Scale::from(1.0), radius)
+                    render::window_elements(renderer, &window, at, Scale::from(1.0), radius, None)
                 })
                 .collect();
             (elements, 1.0)
