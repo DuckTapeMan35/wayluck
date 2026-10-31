@@ -58,6 +58,8 @@ pub struct Windows {
     focused: Option<WindowId>,
     /// Windows the window manager made fullscreen.
     fullscreen: HashSet<WindowId>,
+    /// The window manager's own (own_window): never focused, never listed.
+    owned: HashSet<WindowId>,
     next: u32,
 }
 
@@ -80,6 +82,7 @@ impl Windows {
             self.focused = None;
         }
         self.fullscreen.remove(&id);
+        self.owned.remove(&id);
         self.borders.remove(&id);
         self.decided.remove(&id);
         self.waiting.remove(&id);
@@ -99,6 +102,15 @@ impl Windows {
     /// window manager.
     pub fn wait(&mut self, id: WindowId) {
         self.waiting.insert(id);
+    }
+
+    /// It's the window manager's own (own_window).
+    pub fn own(&mut self, id: WindowId) {
+        self.owned.insert(id);
+    }
+
+    pub fn is_owned(&self, id: WindowId) -> bool {
+        self.owned.contains(&id)
     }
 
     pub fn border_mut(&mut self, id: WindowId) -> Option<&mut Border> {
@@ -339,7 +351,12 @@ impl Wayluck {
                 Change::Place(..) | Change::Hide(_) | Change::Show(..) | Change::SceneSize(..) => {}
                 Change::Outlines(scene) => self.scenes.clear_outlines(scene),
                 Change::Outline(scene, outline) => self.scenes.add_outline(scene, outline),
-                Change::Focus(id) => self.focus(id.filter(|id| self.windows.get(*id).is_some())),
+                // The window manager's own windows don't take the keyboard.
+                Change::Focus(id) => {
+                    self.focus(id.filter(|id| {
+                        self.windows.get(*id).is_some() && !self.windows.is_owned(*id)
+                    }))
+                }
                 Change::Border(id, width, colors, radius) => {
                     if self.windows.get(id).is_some() {
                         self.windows

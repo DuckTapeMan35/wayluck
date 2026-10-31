@@ -157,6 +157,24 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
                     state.offers_done();
                 }
             }
+            wayluck_wm_manager_v1::Request::OwnWindow { id, surface } => {
+                // A toplevel of its own client's, that isn't announced yet.
+                let window = Windows::id_of(&surface).filter(|w| {
+                    surface.client().as_ref() == manager.client().as_ref()
+                        && !state.wm.windows.contains_key(w)
+                });
+                let Some(window) = window else {
+                    manager.post_error(
+                        wayluck_wm_manager_v1::Error::NotOwnToplevel,
+                        "own_window: not a toplevel of the window manager's own",
+                    );
+                    return;
+                };
+                let resource = data_init.init(id, window);
+                state.windows.own(window);
+                // Known now: at its first commit, it isn't announced.
+                state.wm.windows.insert(window, resource);
+            }
             // Handled in destroyed, which also covers the client going away.
             wayluck_wm_manager_v1::Request::Destroy => {}
             wayluck_wm_manager_v1::Request::BindKey {

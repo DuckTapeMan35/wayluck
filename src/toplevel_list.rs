@@ -51,6 +51,10 @@ impl Wayluck {
         list: &ExtForeignToplevelListV1,
         id: WindowId,
     ) -> Option<ExtForeignToplevelHandleV1> {
+        // The window manager's own windows aren't listed.
+        if self.windows.is_owned(id) {
+            return None;
+        }
         let client = list.client()?;
         let handle = client
             .create_resource::<ExtForeignToplevelHandleV1, WindowId, Wayluck>(

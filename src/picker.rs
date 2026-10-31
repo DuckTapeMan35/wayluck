@@ -240,6 +240,9 @@ impl Wayluck {
     /// A scene's windows, topmost first.
     fn send_windows(&self, host: &WayluckPickerHostV1, scene: &Scene) {
         for (id, _) in scene.windows().rev() {
+            if self.windows.is_owned(id) {
+                continue; // the window manager's own: a preview
+            }
             let Some(toplevel) = self.windows.get(id).and_then(|w| w.toplevel()) else {
                 continue;
             };
