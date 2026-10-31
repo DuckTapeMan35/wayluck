@@ -6,6 +6,7 @@ use crate::{
     Wayluck, image_capture, layers,
     protocol::wayluck_wm_transaction_v1::WayluckWmTransactionV1,
     render::Border,
+    rounded::Outline,
     scenes::{self, SceneId},
 };
 use smithay::{
@@ -159,6 +160,10 @@ pub enum Change {
     Tiled(WindowId, u32),
     /// Tell a window whether it's fullscreen.
     Fullscreen(WindowId, bool),
+    /// A scene's outlines are those added after this (none, if none are).
+    Outlines(SceneId),
+    /// Draw an outline on a scene (rounded.rs).
+    Outline(SceneId, Outline),
 }
 
 impl Wayluck {
@@ -194,6 +199,8 @@ impl Wayluck {
             let scene = match change {
                 Change::Place(scene, ..)
                 | Change::SceneSize(scene, _)
+                | Change::Outlines(scene)
+                | Change::Outline(scene, _)
                 | Change::Show(_, Some(scene)) => Some(*scene),
                 _ => None,
             };
@@ -207,7 +214,11 @@ impl Wayluck {
                 | Change::Border(id, ..)
                 | Change::Fullscreen(id, _)
                 | Change::Tiled(id, _) => *id,
-                Change::Focus(None) | Change::Show(..) | Change::SceneSize(..) => continue,
+                Change::Focus(None)
+                | Change::Show(..)
+                | Change::SceneSize(..)
+                | Change::Outline(..)
+                | Change::Outlines(_) => continue,
             };
             if self.windows.get(id).is_none() {
                 return Err("a window in it is gone");
@@ -252,6 +263,8 @@ impl Wayluck {
                     });
                 }
                 Change::Focus(_)
+                | Change::Outlines(_)
+                | Change::Outline(..)
                 | Change::Border(..)
                 | Change::Show(..)
                 | Change::SceneSize(..) => {}
@@ -324,6 +337,8 @@ impl Wayluck {
         for change in changes {
             match change {
                 Change::Place(..) | Change::Hide(_) | Change::Show(..) | Change::SceneSize(..) => {}
+                Change::Outlines(scene) => self.scenes.clear_outlines(scene),
+                Change::Outline(scene, outline) => self.scenes.add_outline(scene, outline),
                 Change::Focus(id) => self.focus(id.filter(|id| self.windows.get(*id).is_some())),
                 Change::Border(id, width, colors, radius) => {
                     if self.windows.get(id).is_some() {

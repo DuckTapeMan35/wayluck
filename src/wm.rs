@@ -13,6 +13,8 @@ use crate::{
         wayluck_wm_transaction_v1::{self, WayluckWmTransactionV1},
         wayluck_wm_window_v1::{self, WayluckWmWindowV1},
     },
+    render::argb,
+    rounded::Outline,
     scenes::SceneId,
     windows::{self, Change, WindowId, Windows},
 };
@@ -322,6 +324,34 @@ impl Dispatch<WayluckWmTransactionV1, Transaction> for Wayluck {
                 radius,
             )),
             Request::Tiled { window, edges } => Some(Change::Tiled(id_of(&window), edges)),
+            Request::Outlines { scene } => Some(Change::Outlines(scene_of(&scene))),
+            Request::Outline {
+                scene,
+                x,
+                y,
+                width,
+                height,
+                clip_x,
+                clip_y,
+                clip_width,
+                clip_height,
+                line_width,
+                color,
+                radius,
+            } => {
+                let rect = Rectangle::new((x, y).into(), (width, height).into());
+                let clip =
+                    Rectangle::new((clip_x, clip_y).into(), (clip_width, clip_height).into());
+                let color = argb(color).components();
+                let outline = Outline {
+                    rect,
+                    clip,
+                    width: line_width,
+                    color,
+                    radius,
+                };
+                Some(Change::Outline(scene_of(&scene), outline))
+            }
             Request::Fullscreen { window, fullscreen } => {
                 Some(Change::Fullscreen(id_of(&window), fullscreen != 0))
             }

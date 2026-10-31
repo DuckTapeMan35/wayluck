@@ -10,8 +10,9 @@
 //! the monitors, and follows the scenes: sync_space maps each window of a
 //! shown scene at its monitor's corner plus where it is in the scene.
 
-use crate::{Wayluck, windows::WindowId};
+use crate::{Wayluck, rounded::Outline, windows::WindowId};
 use smithay::{
+    backend::renderer::gles::element::PixelShaderElement,
     output::Output,
     utils::{Logical, Point, Size},
 };
@@ -33,6 +34,11 @@ impl SceneId {
 pub struct Scene {
     /// The size it's laid out for (0×0 until it's given one).
     pub size: Size<i32, Logical>,
+    /// Drawn below its windows (a window manager's group outlines).
+    pub outlines: Vec<Outline>,
+    /// How they were last drawn, in the same order: kept from frame to
+    /// frame, so the damage tracker knows when one really changed.
+    pub drawn_outlines: Vec<(Outline, PixelShaderElement)>,
     stack: Vec<(WindowId, Point<i32, Logical>)>,
 }
 
@@ -122,6 +128,19 @@ impl Scenes {
         }
     }
 
+    /// A scene has no outlines, until more are added.
+    pub fn clear_outlines(&mut self, scene: SceneId) {
+        if let Some(s) = self.by_id.get_mut(&scene) {
+            s.outlines.clear();
+        }
+    }
+
+    pub fn add_outline(&mut self, scene: SceneId, outline: Outline) {
+        if let Some(s) = self.by_id.get_mut(&scene) {
+            s.outlines.push(outline);
+        }
+    }
+
     /// What an output shows from now on (None: no scene).
     pub fn show(&mut self, output: &Output, scene: Option<SceneId>) {
         self.shown.retain(|(o, _)| o != output);
@@ -134,6 +153,11 @@ impl Scenes {
     pub fn shown_on(&self, output: &Output) -> Option<&Scene> {
         let (_, id) = self.shown.iter().find(|(o, _)| o == output)?;
         self.by_id.get(id)
+    }
+
+    pub fn shown_on_mut(&mut self, output: &Output) -> Option<&mut Scene> {
+        let (_, id) = self.shown.iter().find(|(o, _)| o == output)?;
+        self.by_id.get_mut(id)
     }
 
     /// No output shows anything (a window manager has just come: it says).

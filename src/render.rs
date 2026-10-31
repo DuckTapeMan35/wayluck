@@ -4,6 +4,7 @@ use crate::{
     Wayluck,
     layers::Side,
     rounded::{self, AsGles, BorderElement, ClipIds, ClippedSurface, Shaders},
+    scenes::Scene,
 };
 use smithay::{
     backend::renderer::{
@@ -125,6 +126,12 @@ where
         );
     }
 
+    // The outlines on the scene it shows, behind its windows: they're
+    // around them (and a floating window over one hides it).
+    if let Some(scene) = state.scenes.shown_on_mut(output) {
+        elements.extend(outline_elements(renderer, scene));
+    }
+
     let below = state.layers(output, Side::Below);
     if let Some(from) = &layers_from {
         elements.extend(layer_elements(from, renderer, scale, below));
@@ -202,6 +209,54 @@ where
         *ids = kept;
     }
     elements
+}
+
+/// The outlines on a scene (rounded::Outline), last first, as they're drawn
+/// from the corner of an output that shows it.
+fn outline_elements<R: AsGles>(renderer: &mut R, scene: &mut Scene) -> Vec<Element<R>> {
+    let drawn: Vec<_> = scene
+        .outlines
+        .iter()
+        .filter_map(|o| Some((*o, o.drawn()?)))
+        .collect();
+    let Some(program) = Shaders::get(renderer)
+        .map(|s| s.border)
+        .filter(|_| !drawn.is_empty())
+    else {
+        scene.drawn_outlines.clear();
+        return Vec::new();
+    };
+    scene.drawn_outlines.truncate(drawn.len());
+    let mut elements = Vec::new();
+    for (i, (outline, (area, uniforms))) in drawn.into_iter().enumerate() {
+        match scene.drawn_outlines.get_mut(i) {
+            // As it was last drawn: unchanged, to the damage tracker too.
+            Some((last, shader)) if *last == outline => {
+                elements.push(shader.clone());
+            }
+            Some((last, shader)) => {
+                shader.resize(area, None);
+                shader.update_uniforms(uniforms);
+                *last = outline;
+                elements.push(shader.clone());
+            }
+            None => {
+                let shader = PixelShaderElement::new(
+                    program.clone(),
+                    area,
+                    None,
+                    1.0,
+                    uniforms,
+                    Kind::Unspecified,
+                );
+                scene.drawn_outlines.push((outline, shader.clone()));
+                elements.push(shader);
+            }
+        }
+    }
+    (elements.into_iter().rev())
+        .map(|shader| Element::Border(BorderElement(shader)))
+        .collect()
 }
 
 /// The layer surfaces of `layers` on output (with their popups), front first.
@@ -336,7 +391,7 @@ impl Border {
 }
 
 /// 0xAARRGGBB as smithay's colour: components 0 to 1, premultiplied.
-fn argb(c: u32) -> Color32F {
+pub fn argb(c: u32) -> Color32F {
     let part = |shift: u32| ((c >> shift) & 0xff) as f32 / 255.0;
     let a = part(24);
     Color32F::new(part(16) * a, part(8) * a, part(0) * a, a)

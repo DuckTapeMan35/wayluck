@@ -116,6 +116,7 @@ impl Shaders {
                 UniformName::new("right", UniformType::_4f),
                 UniformName::new("bottom", UniformType::_4f),
                 UniformName::new("left", UniformType::_4f),
+                UniformName::new("beyond", UniformType::_4f),
             ],
         )?;
         let clip = gles.compile_custom_texture_shader(
@@ -131,9 +132,20 @@ impl Shaders {
     }
 }
 
-/// The uniforms for a border: radius and width in pixels, colours (top,
-/// right, bottom, left) as premultiplied RGBA.
+/// The uniforms for a window's border: radius and width in pixels, colours
+/// (top, right, bottom, left) as premultiplied RGBA.
 pub fn border_uniforms(radius: f32, width: f32, colors: [[f32; 4]; 4]) -> Vec<Uniform<'static>> {
+    ring_uniforms(radius, width, colors, [0.0; 4])
+}
+
+/// The uniforms for the border shader's ring: as a border's, and how far
+/// its outer edge is past the element's sides (left, top, right, bottom).
+fn ring_uniforms(
+    radius: f32,
+    width: f32,
+    colors: [[f32; 4]; 4],
+    beyond: [f32; 4],
+) -> Vec<Uniform<'static>> {
     let [top, right, bottom, left] = colors;
     vec![
         Uniform::new("radius", radius),
@@ -142,7 +154,40 @@ pub fn border_uniforms(radius: f32, width: f32, colors: [[f32; 4]; 4]) -> Vec<Un
         Uniform::new("right", right),
         Uniform::new("bottom", bottom),
         Uniform::new("left", left),
+        Uniform::new("beyond", beyond),
     ]
+}
+
+/// An outline the window manager draws on a scene (a group's): a line
+/// width pixels wide along the inside of rect, in one colour (premultiplied
+/// RGBA), its corners rounded as a border's (radius on its inside, radius +
+/// width outside); only what's inside clip drawn. In the scene's
+/// coordinates.
+#[derive(Clone, Copy, PartialEq)]
+pub struct Outline {
+    pub rect: Rectangle<i32, Logical>,
+    pub clip: Rectangle<i32, Logical>,
+    pub width: u32,
+    pub color: [f32; 4],
+    pub radius: u32,
+}
+
+impl Outline {
+    /// Where it's drawn, in the scene (None: nothing of it is in its clip),
+    /// and the shader's uniforms for it.
+    pub fn drawn(&self) -> Option<(Rectangle<i32, Logical>, Vec<Uniform<'static>>)> {
+        let area = self.rect.intersection(self.clip)?;
+        let (r, a) = (self.rect, area);
+        let beyond = [
+            (a.loc.x - r.loc.x) as f32,
+            (a.loc.y - r.loc.y) as f32,
+            ((r.loc.x + r.size.w) - (a.loc.x + a.size.w)) as f32,
+            ((r.loc.y + r.size.h) - (a.loc.y + a.size.h)) as f32,
+        ];
+        let (radius, width) = (self.radius as f32, self.width as f32);
+        let uniforms = ring_uniforms(radius, width, [self.color; 4], beyond);
+        Some((area, uniforms))
+    }
 }
 
 /// A border drawn by the shader: smithay's pixel shader element, for any
