@@ -26,8 +26,9 @@ fn refresh_of(backend: &WinitGraphicsBackend<GlesRenderer>) -> i32 {
     backend
         .window()
         .current_monitor()
-        .and_then(|m| m.refresh_rate_millihertz())
-        .map_or(60_000, |r| r as i32)
+        .and_then(|m| m.current_video_mode())
+        .and_then(|mode| mode.refresh_rate_millihertz())
+        .map_or(60_000, |r| r.get() as i32)
 }
 
 pub fn init(
@@ -51,6 +52,7 @@ pub fn init(
             subpixel: Subpixel::Unknown,
             make: "wayluck".into(),
             model: "winit".into(),
+            serial_number: String::new(),
         },
     );
     let _global = output.create_global::<Wayluck>(&state.display_handle);

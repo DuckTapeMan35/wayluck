@@ -4,7 +4,10 @@
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+    }:
     let
       systems = [
         "x86_64-linux"
@@ -35,6 +38,9 @@
             pkg-config
             makeWrapper
           ];
+          cargoLock.outputHashes = {
+            "smithay-0.7.0" = "sha256-ALoZh3s+Qb08thEkWIaXY8mtE5MUtveMXYE/gT0RGfc=";
+          };
           buildInputs = with pkgs; [
             libxkbcommon
             wayland

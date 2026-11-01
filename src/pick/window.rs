@@ -24,7 +24,9 @@ use smithay::{
     },
     reexports::{
         calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic},
-        winit::{dpi::LogicalSize, platform::wayland::WindowAttributesExtWayland, window::Window},
+        winit::{
+            dpi::LogicalSize, platform::wayland::WindowAttributesWayland, window::WindowAttributes,
+        },
     },
     utils::{Buffer, Logical, Physical, Point, Rectangle, Size, Transform},
 };
@@ -111,10 +113,11 @@ pub fn choose(
 ) -> Result<(Option<usize>, Host), Box<dyn std::error::Error>> {
     let text = Text::new()?;
     let height = (HEADING + ROW * rows.len() as i32 + PADDING).min(MAX_HEIGHT);
-    let attributes = Window::default_attributes()
-        .with_name(APP_ID, APP_ID)
+    let wayland = WindowAttributesWayland::default().with_name(APP_ID, APP_ID);
+    let attributes = WindowAttributes::default()
+        .with_platform_attributes(Box::new(wayland))
         .with_title(TITLE)
-        .with_inner_size(LogicalSize::new(WIDTH, height))
+        .with_surface_size(LogicalSize::new(WIDTH, height))
         .with_resizable(false)
         .with_decorations(false);
     let (backend, events) = winit::init_from_attributes::<GlesRenderer>(attributes)?;

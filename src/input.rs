@@ -11,7 +11,8 @@ use crate::{
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-        KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+        InputTime, KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+        PointerMotionEvent,
     },
     desktop::WindowSurfaceType,
     input::{
@@ -38,12 +39,12 @@ impl Wayluck {
     }
 
     fn on_key<I: InputBackend>(&mut self, event: I::KeyboardKeyEvent) {
-        self.key(event.key_code(), event.state(), event.time_msec());
+        self.key(event.key_code(), event.state(), event.time());
     }
 
     /// A key went down or up: wayluck's own keys and the window manager's
     /// bindings first, then the focused client.
-    pub fn key(&mut self, code: Keycode, key_state: KeyState, time: u32) {
+    pub fn key(&mut self, code: Keycode, key_state: KeyState, time: InputTime) {
         let keyboard = self.seat.get_keyboard().unwrap();
         keyboard.input::<(), _>(
             self,
@@ -130,14 +131,13 @@ impl Wayluck {
     /// would turn every later key into a shortcut (Return into Super+Return).
     pub fn release_all_keys(&mut self) {
         let keyboard = self.seat.get_keyboard().unwrap();
-        let time = self.start_time.elapsed().as_millis() as u32;
         for key in keyboard.pressed_keys() {
             keyboard.input::<(), _>(
                 self,
                 key,
                 KeyState::Released,
                 SERIAL_COUNTER.next_serial(),
-                time,
+                InputTime::now(),
                 |_, _, _| FilterResult::Forward,
             );
         }
@@ -151,7 +151,7 @@ impl Wayluck {
             return;
         };
         let location = event.position_transformed(area.size) + area.loc.to_f64();
-        self.move_pointer(location, event.time_msec());
+        self.move_pointer(location, event.time());
     }
 
     /// A mouse or touchpad moved (on hardware): by so much from where the
@@ -169,12 +169,12 @@ impl Wayluck {
             location.x = location.x.clamp(x0, x0 + area.size.w as f64 - 1.0);
             location.y = location.y.clamp(y0, y0 + area.size.h as f64 - 1.0);
         }
-        self.move_pointer(location, event.time_msec());
+        self.move_pointer(location, event.time());
     }
 
     /// The pointer is at location now, by the user's hand or a warp: clients
     /// under it hear, and so does the window manager.
-    pub fn move_pointer(&mut self, location: Point<f64, Logical>, time: u32) {
+    pub fn move_pointer(&mut self, location: Point<f64, Logical>, time: InputTime) {
         // Where wayluck draws the cursor, it moved.
         if self.cursor.drawn {
             self.queue_redraw();
@@ -201,11 +201,11 @@ impl Wayluck {
     }
 
     fn on_button<I: InputBackend>(&mut self, event: I::PointerButtonEvent) {
-        self.button(event.button_code(), event.state(), event.time_msec());
+        self.button(event.button_code(), event.state(), event.time());
     }
 
     /// A pointer button went down or up (an evdev code: 0x110 is the left).
-    pub fn button(&mut self, code: u32, state: ButtonState, time: u32) {
+    pub fn button(&mut self, code: u32, state: ButtonState, time: InputTime) {
         let pointer = self.seat.get_pointer().unwrap();
         let serial = SERIAL_COUNTER.next_serial();
         // A button the window manager bound, or any while it drags: not
@@ -248,7 +248,7 @@ impl Wayluck {
 
     fn on_axis<I: InputBackend>(&mut self, event: I::PointerAxisEvent) {
         let source = event.source();
-        let mut frame = AxisFrame::new(event.time_msec()).source(source);
+        let mut frame = AxisFrame::new(event.time()).source(source);
         for axis in [Axis::Horizontal, Axis::Vertical] {
             // Smooth scrolling in pixels, or wheel clicks (120 per notch).
             let amount = event

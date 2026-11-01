@@ -112,7 +112,7 @@ impl Wayluck {
         };
         let acked = with_states(surface, |s| {
             let data = s.data_map.get::<XdgToplevelSurfaceData>()?;
-            data.lock().unwrap().configure_serial
+            data.lock().unwrap().last_acked.as_ref().map(|c| c.serial)
         });
         // A commit from before it took the new size isn't the one.
         if !acked.is_some_and(|a| a.is_no_older_than(&serial)) {

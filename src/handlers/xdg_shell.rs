@@ -6,7 +6,6 @@ use crate::{
     windows::{self, Windows},
 };
 use smithay::{
-    delegate_xdg_shell,
     desktop::Window,
     reexports::wayland_server::protocol::{wl_output, wl_seat, wl_surface::WlSurface},
     utils::Serial,
@@ -90,7 +89,6 @@ impl XdgShellHandler for Wayluck {
         self.reposition_popup(surface, positioner, token);
     }
 }
-delegate_xdg_shell!(Wayluck);
 
 /// After a commit: a toplevel's first commit is answered with its first
 /// configure (it can't draw anything before that), once the window manager,

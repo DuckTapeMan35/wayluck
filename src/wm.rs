@@ -19,6 +19,7 @@ use crate::{
     windows::{self, Change, WindowId, Windows},
 };
 use smithay::{
+    backend::input::InputTime,
     desktop::{Space, Window, layer_map_for_output},
     input::keyboard::{Keysym, ModifiersState},
     output::{Output, PhysicalProperties, Subpixel},
@@ -131,6 +132,7 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
                         subpixel: Subpixel::Unknown,
                         make: String::new(),
                         model: String::new(),
+                        serial_number: String::new(),
                     };
                     data_init.init(id, Output::new("NONE".into(), nowhere));
                     return;
@@ -200,8 +202,7 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
             }
             wayluck_wm_manager_v1::Request::WarpPointer { x, y } => {
                 if state.wm.manager.as_ref() == Some(manager) {
-                    let time = state.start_time.elapsed().as_millis() as u32;
-                    state.move_pointer((x as f64, y as f64).into(), time);
+                    state.move_pointer((x as f64, y as f64).into(), InputTime::now());
                 }
             }
             wayluck_wm_manager_v1::Request::SetKeymap {

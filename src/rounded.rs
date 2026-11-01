@@ -19,7 +19,7 @@ use smithay::{
             utils::{CommitCounter, DamageSet, OpaqueRegions},
         },
     },
-    utils::{Buffer, Logical, Physical, Rectangle, Scale, Size, Transform},
+    utils::{Buffer, Logical, Physical, Rectangle, Scale, Size, Transform, user_data::UserDataMap},
 };
 use std::collections::HashMap;
 
@@ -234,9 +234,10 @@ impl<R: AsGles> RenderElement<R> for BorderElement {
         dst: Rectangle<i32, Physical>,
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
+        cache: Option<&UserDataMap>,
     ) -> Result<(), R::Error> {
         let frame = R::gles_frame(frame);
-        RenderElement::<GlesRenderer>::draw(&self.0, frame, src, dst, damage, opaque_regions)
+        RenderElement::<GlesRenderer>::draw(&self.0, frame, src, dst, damage, opaque_regions, cache)
             .map_err(R::error)
     }
 
@@ -356,6 +357,7 @@ where
         dst: Rectangle<i32, Physical>,
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
+        cache: Option<&UserDataMap>,
     ) -> Result<(), R::Error> {
         let tex = match self.inner.texture() {
             WaylandSurfaceTexture::Texture(texture) => texture.size(),
@@ -363,7 +365,9 @@ where
         };
         // A solid colour, or a rotated buffer: drawn as it is.
         if tex.is_empty() || self.inner.transform() != Transform::Normal || src.size.is_empty() {
-            return self.inner.draw(frame, src, dst, damage, opaque_regions);
+            return self
+                .inner
+                .draw(frame, src, dst, damage, opaque_regions, cache);
         }
         // It may be drawn elsewhere than its geometry, or scaled (captures):
         // the window's rectangle, and the radius, go with it.
@@ -401,7 +405,9 @@ where
             Uniform::new("radius", radius),
         ];
         R::gles_frame(frame).override_default_tex_program(self.program.clone(), uniforms);
-        let drawn = self.inner.draw(frame, src, dst, damage, opaque_regions);
+        let drawn = self
+            .inner
+            .draw(frame, src, dst, damage, opaque_regions, cache);
         R::gles_frame(frame).clear_tex_program_override();
         drawn
     }

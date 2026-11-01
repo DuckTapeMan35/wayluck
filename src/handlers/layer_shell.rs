@@ -7,7 +7,6 @@
 
 use crate::Wayluck;
 use smithay::{
-    delegate_layer_shell,
     desktop::{LayerSurface, WindowSurfaceType, layer_map_for_output},
     output::Output,
     reexports::wayland_server::protocol::{wl_output::WlOutput, wl_surface::WlSurface},
@@ -76,7 +75,6 @@ impl WlrLayerShellHandler for Wayluck {
         }
     }
 }
-delegate_layer_shell!(Wayluck);
 
 /// After a commit: if it's a layer surface's, its output's layers are laid
 /// out again (it may have changed its size or zone), and its first commit is

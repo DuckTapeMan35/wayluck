@@ -289,6 +289,7 @@ where
 /// their next one, and drop what's gone.
 pub fn frame_done(state: &mut Wayluck, output: &Output) {
     let now = state.start_time.elapsed();
+    state.space.refresh();
     // Only to windows on it: those elsewhere are paced by their own output
     for window in state.space.elements() {
         if !state.space.outputs_for_element(window).contains(output) {
@@ -305,7 +306,6 @@ pub fn frame_done(state: &mut Wayluck, output: &Output) {
         });
     }
     drop(map);
-    state.space.refresh();
     state.popups.cleanup();
 }
 

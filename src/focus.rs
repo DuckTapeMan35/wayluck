@@ -6,7 +6,7 @@
 
 use crate::Wayluck;
 use smithay::{
-    backend::input::KeyState,
+    backend::input::{InputTime, KeyState},
     desktop::PopupKind,
     input::{
         Seat,
@@ -110,7 +110,7 @@ impl KeyboardTarget<Wayluck> for KeyboardFocus {
         key: KeysymHandle<'_>,
         state: KeyState,
         serial: Serial,
-        time: u32,
+        time: InputTime,
     ) {
         match self {
             KeyboardFocus::Surface(s) => {

@@ -295,7 +295,7 @@ impl Wayluck {
                     } else if let Some(x11) = window.x11_surface() {
                         // Told at once, and not waited for: where it goes, it
                         // hears when it's shown there (sync_space).
-                        let rect = Rectangle::new(x11.geometry().loc, rect.size);
+                        let rect = Rectangle::new(x11.last_configure().loc, rect.size);
                         if let Err(e) = x11.configure(rect) {
                             tracing::debug!("X: can't resize window {}: {e}", x11.window_id());
                         }

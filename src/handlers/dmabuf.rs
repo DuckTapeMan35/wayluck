@@ -4,7 +4,6 @@
 
 use smithay::{
     backend::allocator::dmabuf::Dmabuf,
-    delegate_dmabuf,
     wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
 };
 
@@ -33,4 +32,3 @@ impl DmabufHandler for Wayluck {
         }
     }
 }
-delegate_dmabuf!(Wayluck);

@@ -13,16 +13,21 @@ use crate::{Wayluck, focus::KeyboardFocus};
 pub use compositor::compositor_state_of;
 pub use layer_shell::layer_committed;
 use smithay::{
-    delegate_data_device, delegate_output, delegate_seat,
-    input::{Seat, SeatHandler, SeatState, pointer::CursorImageStatus},
+    delegate_dispatch2,
+    input::{
+        Seat, SeatHandler, SeatState,
+        dnd::{DnDGrab, DndGrabHandler, GrabType, Source},
+        pointer::{CursorImageStatus, Focus},
+    },
     reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
+    utils::Serial,
     wayland::{
         output::OutputHandler,
+        pointer_constraints::PointerConstraintsHandler,
         selection::{
             SelectionHandler,
             data_device::{
-                ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
-                set_data_device_focus,
+                DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler, set_data_device_focus,
             },
             primary_selection::set_primary_focus,
         },
@@ -60,7 +65,6 @@ impl SeatHandler for Wayluck {
         set_primary_focus(dh, seat, client);
     }
 }
-delegate_seat!(Wayluck);
 
 // wl_data_device_manager: the clipboard, and drag and drop. smithay does the
 // work; wayluck only says who has focus.
@@ -69,15 +73,41 @@ impl SelectionHandler for Wayluck {
 }
 
 impl DataDeviceHandler for Wayluck {
-    fn data_device_state(&self) -> &DataDeviceState {
-        &self.data_device_state
+    fn data_device_state(&mut self) -> &mut DataDeviceState {
+        &mut self.data_device_state
     }
 }
 
-impl ClientDndGrabHandler for Wayluck {}
-impl ServerDndGrabHandler for Wayluck {}
-delegate_data_device!(Wayluck);
+/// A client started dragging something with the pointer: smithay carries it
+/// to wherever it's dropped (drawing no icon for it yet). Without a pointer
+/// grab to go with it (touch: wayluck has none), it's cancelled.
+impl WaylandDndGrabHandler for Wayluck {
+    fn dnd_requested<S: Source>(
+        &mut self,
+        source: S,
+        _icon: Option<WlSurface>,
+        seat: Seat<Self>,
+        serial: Serial,
+        type_: GrabType,
+    ) {
+        let pointer = seat.get_pointer();
+        let start = pointer.as_ref().and_then(|p| p.grab_start_data());
+        let (GrabType::Pointer, Some(pointer), Some(start)) = (type_, pointer, start) else {
+            return source.cancel();
+        };
+        let grab = DnDGrab::new_pointer(&self.display_handle, start, source, seat);
+        pointer.set_grab(self, grab, serial, Focus::Keep);
+    }
+}
+
+impl DndGrabHandler for Wayluck {}
+
+// Pointer lock and confinement (games, 3D views): not offered yet, but
+// smithay's pointer needs the handler.
+impl PointerConstraintsHandler for Wayluck {}
 
 // wl_output: wayluck's outputs, as clients see them.
 impl OutputHandler for Wayluck {}
-delegate_output!(Wayluck);
+
+// Every smithay protocol's requests go to its state.
+delegate_dispatch2!(Wayluck);

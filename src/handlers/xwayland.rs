@@ -4,7 +4,6 @@
 
 use crate::Wayluck;
 use smithay::{
-    delegate_xwayland_shell,
     desktop::Window,
     reexports::{calloop::LoopHandle, wayland_server::protocol::wl_surface::WlSurface},
     utils::{Logical, Rectangle},
@@ -25,6 +24,7 @@ impl Wayluck {
             &self.display_handle,
             None,
             std::iter::empty::<(String, String)>(),
+            std::iter::empty::<String>(),
             true,
             Stdio::null(),
             Stdio::inherit(),
@@ -38,7 +38,8 @@ impl Wayluck {
         let wm_handle = handle.clone();
         let source = handle.insert_source(xwayland, move |event, _, state| match event {
             XWaylandEvent::Ready { x11_socket, .. } => {
-                match X11Wm::start_wm(wm_handle.clone(), x11_socket, client.clone()) {
+                let dh = state.display_handle.clone();
+                match X11Wm::start_wm(wm_handle.clone(), &dh, x11_socket, client.clone()) {
                     Ok(wm) => {
                         tracing::info!("Xwayland ready on :{number}");
                         state.xwm = Some(wm);
@@ -90,8 +91,6 @@ impl XWaylandShellHandler for Wayluck {
 /// the window manager hears so with it.
 #[derive(Default)]
 struct AskedFullscreen(Mutex<bool>);
-
-delegate_xwayland_shell!(Wayluck);
 
 impl XwmHandler for Wayluck {
     fn xwm_state(&mut self, _xwm: XwmId) -> &mut X11Wm {
@@ -158,7 +157,7 @@ impl XwmHandler for Wayluck {
         // X needs an answer either way.
         let id = self.windows.find_x11(&window);
         let placed = id.is_some_and(|id| self.wm.manager.is_some() && self.windows.decided(id));
-        let mut rect = window.geometry();
+        let mut rect = window.last_configure();
         if !placed {
             rect.size.w = w.map_or(rect.size.w, |w| w as i32);
             rect.size.h = h.map_or(rect.size.h, |h| h as i32);

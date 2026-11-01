@@ -4,7 +4,6 @@
 
 use crate::Wayluck;
 use smithay::{
-    delegate_xdg_decoration,
     reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
     wayland::shell::xdg::{ToplevelSurface, decoration::XdgDecorationHandler},
 };
@@ -23,7 +22,6 @@ impl XdgDecorationHandler for Wayluck {
         server_side(&toplevel);
     }
 }
-delegate_xdg_decoration!(Wayluck);
 
 /// Tell the client not to decorate: in its next configure, or its first
 /// one if it hasn't had it yet.

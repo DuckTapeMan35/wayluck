@@ -10,7 +10,6 @@ use std::io;
 
 use smithay::{
     backend::allocator::dmabuf::Dmabuf,
-    delegate_drm_syncobj,
     reexports::{
         calloop::{EventSource, Interest},
         wayland_server::{Resource, protocol::wl_surface::WlSurface},
@@ -32,7 +31,6 @@ impl DrmSyncobjHandler for Wayluck {
         self.syncobj_state.as_mut()
     }
 }
-delegate_drm_syncobj!(Wayluck);
 
 /// Before a commit (a pre-commit hook): one with a new GPU buffer waits
 /// until the buffer is drawn (its acquire point, or else its dmabuf). Only

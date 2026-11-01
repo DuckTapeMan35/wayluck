@@ -117,6 +117,7 @@ pub fn init(
             subpixel: Subpixel::Unknown,
             make: "unknown".into(),
             model: "unknown".into(),
+            serial_number: String::new(),
         },
     );
     let _global = output.create_global::<Wayluck>(&state.display_handle);
@@ -149,14 +150,14 @@ pub fn init(
             .clone()
     };
     let compositor = DrmCompositor::new(
-        OutputModeSource::Auto(output.clone()),
+        OutputModeSource::Auto(output.downgrade()),
         surface,
         None,
         GbmAllocator::new(
             gbm.clone(),
             GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
         ),
-        GbmFramebufferExporter::new(gbm.clone(), Some(node)),
+        GbmFramebufferExporter::new(gbm.clone(), node.into()),
         [Fourcc::Xrgb8888, Fourcc::Argb8888],
         render_formats,
         drm.cursor_size(),

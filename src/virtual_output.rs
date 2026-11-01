@@ -51,6 +51,7 @@ impl Wayluck {
                 subpixel: Subpixel::Unknown,
                 make: "wayluck".into(),
                 model: "virtual".into(),
+                serial_number: String::new(),
             },
         );
         let refresh = (template.as_ref())

@@ -16,7 +16,7 @@
 use crate::{Wayluck, windows};
 use smithay::{
     backend::{
-        input::{ButtonState, KeyState},
+        input::{ButtonState, InputTime, KeyState},
         renderer::utils::with_renderer_surface_state,
     },
     desktop::Window,
@@ -91,7 +91,7 @@ fn serve(mut stream: &UnixStream, partial: &mut Vec<u8>, state: &mut Wayluck) ->
 
 fn run(command: &str, state: &mut Wayluck) -> String {
     let words: Vec<&str> = command.split_whitespace().collect();
-    let time = state.start_time.elapsed().as_millis() as u32;
+    let time = InputTime::now();
     let pressed = |word: &str| match word {
         "down" => Some(true),
         "up" => Some(false),

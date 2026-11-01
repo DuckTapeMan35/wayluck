@@ -51,6 +51,7 @@ pub fn init(
             subpixel: Subpixel::Unknown,
             make: "wayluck".into(),
             model: "headless".into(),
+            serial_number: String::new(),
         },
     );
     let _global = output.create_global::<Wayluck>(&state.display_handle);

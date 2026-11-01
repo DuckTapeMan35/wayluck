@@ -38,8 +38,12 @@ required-features = ["test-harness"]
 # a way for tests to drive input. Never in a build that's installed.
 test-harness = []
 
+# smithay's master: 0.7.0 (the latest release) names the root window as
+# the active X window, and Wine games then minimize themselves. Pinned to a
+# commit; back to a release once one has the fix.
 [dependencies.smithay]
-version = "0.7.0"
+git = "https://github.com/Smithay/smithay.git"
+rev = "f581531d479cf2e3307bafb913c5d2bb12860bb3"
 default-features = false
 features = [
   "xwayland",
