@@ -10,7 +10,7 @@ use std::{
 };
 use x11rb::{
     properties::WmSizeHints,
-    protocol::xproto::{AtomEnum, PropMode},
+    protocol::xproto::{AtomEnum, ConnectionExt as _, PropMode},
     wrapper::ConnectionExt as _,
 };
 
@@ -138,6 +138,31 @@ fn x_fullscreen_is_the_window_managers_to_give() {
         "the X window to be fullscreen",
     );
     assert_eq!(wm.failed(), 0);
+}
+
+/// A game (or Wine for it) sets _NET_WM_STATE before it maps its window,
+/// as EWMH allows: the window manager hears it wants fullscreen with the
+/// window, so it can place it fullscreen at once instead of tiling it first.
+#[test]
+fn an_x_window_that_starts_fullscreen_asks_with_the_window() {
+    let session = Session::start();
+    let wm = Wm::start(&session);
+    let _x = XWindow::open_with(&session.x_display, "xgame", "XGame", (200, 200), |c, w| {
+        let atom = |name: &str| {
+            c.intern_atom(false, name.as_bytes())
+                .unwrap()
+                .reply()
+                .unwrap()
+                .atom
+        };
+        let (state, fullscreen) = (atom("_NET_WM_STATE"), atom("_NET_WM_STATE_FULLSCREEN"));
+        c.change_property32(PropMode::REPLACE, w, state, AtomEnum::ATOM, &[fullscreen])
+            .unwrap();
+    });
+    let heard = wm.window("xgame");
+    wm.wait_for(heard.id, "the fullscreen request", |w| {
+        w.fullscreen_requests == [true]
+    });
 }
 
 #[test]

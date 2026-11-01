@@ -81,8 +81,11 @@ impl XWaylandShellHandler for Wayluck {
         // The window manager too, with everything its client set up first
         // (names, parent, size limits; fullscreen, if it asked already).
         self.wm_window_added(id);
-        if let Some(on) = window.user_data().get::<AskedFullscreen>() {
-            self.wm_fullscreen_request(id, *on.0.lock().unwrap());
+        // Asked by message since it was mapped, or else set in _NET_WM_STATE
+        // before (as EWMH allows; smithay reads it at the map request).
+        let asked = (window.user_data().get::<AskedFullscreen>()).map(|a| *a.0.lock().unwrap());
+        if let Some(on) = asked.or(window.is_fullscreen().then_some(true)) {
+            self.wm_fullscreen_request(id, on);
         }
     }
 }
