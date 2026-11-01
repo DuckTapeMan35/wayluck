@@ -4,6 +4,7 @@
 #![allow(dead_code)] // each test uses some of it
 
 pub mod wayland;
+pub mod wm;
 pub mod x;
 use std::{
     io::{BufRead, BufReader, Write},
@@ -104,6 +105,40 @@ impl Session {
             self.command(&format!("key {key} down"));
             self.command(&format!("key {key} up"));
         }
+    }
+
+    /// Where the window titled so is on screen (x, y, width, height), once
+    /// it is.
+    pub fn window(&mut self, title: &str) -> (i32, i32, i32, i32) {
+        let start = Instant::now();
+        loop {
+            // "title@x,y,wxh" for each, "; " between.
+            let windows = self.command("windows");
+            let found = windows.split("; ").find_map(|w| {
+                let (name, at) = w.rsplit_once('@')?;
+                let (x, rest) = at.split_once(',')?;
+                let (y, size) = rest.split_once(',')?;
+                let (width, height) = size.split_once('x')?;
+                let n = |s: &str| s.parse::<i32>().ok();
+                (name == title).then_some((n(x)?, n(y)?, n(width)?, n(height)?))
+            });
+            if let Some(rect) = found.filter(|r| r.2 > 0 && r.3 > 0) {
+                return rect;
+            }
+            if start.elapsed() > PATIENCE {
+                panic!(
+                    "gave up waiting for {title} on screen\nwayluck's log:\n{}",
+                    self.log()
+                );
+            }
+            sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Click the middle of the window titled so.
+    pub fn click_window(&mut self, title: &str) {
+        let (x, y, w, h) = self.window(title);
+        self.click(x + w / 2, y + h / 2);
     }
 
     /// What f gives, once it gives something; after PATIENCE, fails the

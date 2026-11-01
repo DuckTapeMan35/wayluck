@@ -2,6 +2,7 @@
 
 mod atomic;
 mod cursor;
+mod focus;
 mod handlers;
 #[cfg(feature = "test-harness")]
 mod headless;

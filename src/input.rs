@@ -22,6 +22,7 @@ use smithay::{
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{Logical, Point, SERIAL_COUNTER},
+    wayland::seat::WaylandFocus,
 };
 
 impl Wayluck {
@@ -289,7 +290,7 @@ impl Wayluck {
             return None;
         }
         let (window, _) = self.space.element_under(at)?;
-        Windows::id_of(window.toplevel()?.wl_surface())
+        Windows::id_of(&*window.wl_surface()?)
     }
 }
 

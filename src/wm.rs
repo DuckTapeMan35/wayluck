@@ -718,8 +718,7 @@ impl Wayluck {
     /// The window manager's object for a window, and the window's names.
     fn wm_window_names(&self, id: WindowId) -> Option<(&WayluckWmWindowV1, windows::Names)> {
         let resource = self.wm.windows.get(&id)?;
-        let toplevel = self.windows.get(id)?.toplevel()?;
-        Some((resource, windows::names(toplevel)))
+        Some((resource, windows::names(self.windows.get(id)?)))
     }
 
     /// The user clicked a window: the window manager hears so, and decides

@@ -9,7 +9,7 @@ mod syncobj;
 mod xdg_shell;
 mod xwayland;
 
-use crate::Wayluck;
+use crate::{Wayluck, focus::KeyboardFocus};
 pub use compositor::compositor_state_of;
 pub use layer_shell::layer_committed;
 use smithay::{
@@ -33,7 +33,7 @@ pub use xdg_shell::handle_commit;
 // wl_seat: the keyboard and pointer clients get input from. Empty for now;
 // xdg-shell needs one to exist (popup grabs and moves name a seat).
 impl SeatHandler for Wayluck {
-    type KeyboardFocus = WlSurface;
+    type KeyboardFocus = KeyboardFocus;
     type PointerFocus = WlSurface;
     type TouchFocus = WlSurface;
 
@@ -53,9 +53,9 @@ impl SeatHandler for Wayluck {
     /// The clipboard and the primary selection follow keyboard focus: only
     /// the focused client may read them (or set them). Clipboard tools don't
     /// need it (clipboard.rs).
-    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
+    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&KeyboardFocus>) {
         let dh = &self.display_handle;
-        let client = focused.and_then(|s| dh.get_client(s.id()).ok());
+        let client = focused.and_then(|f| dh.get_client(f.surface().id()).ok());
         set_data_device_focus(dh, seat, client.clone());
         set_primary_focus(dh, seat, client);
     }

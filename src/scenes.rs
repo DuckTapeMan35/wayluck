@@ -14,7 +14,7 @@ use crate::{Wayluck, rounded::Outline, windows::WindowId};
 use smithay::{
     backend::renderer::gles::element::PixelShaderElement,
     output::Output,
-    utils::{Logical, Point, Size},
+    utils::{Logical, Point, Rectangle, Size},
 };
 use std::collections::{HashMap, HashSet};
 
@@ -201,6 +201,16 @@ impl Wayluck {
         }
         // Each mapped on top of the last: the order is the stacking.
         for (window, at) in placed {
+            // An X client hears where its window is: X has one screen for
+            // all outputs, and places its menus and tooltips by it.
+            if let Some(x11) = window.x11_surface()
+                && x11.geometry().loc != at
+            {
+                let size = x11.geometry().size;
+                if let Err(e) = x11.configure(Rectangle::new(at, size)) {
+                    tracing::debug!("X: can't move window {}: {e}", x11.window_id());
+                }
+            }
             self.space.map_element(window, at, false);
         }
         self.queue_redraw();

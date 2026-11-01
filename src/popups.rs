@@ -80,7 +80,7 @@ impl Wayluck {
         let Ok(root) = find_popup_root_surface(&kind) else {
             return;
         };
-        let mut grab = match self.popups.grab_popup(root, kind, &seat, serial) {
+        let mut grab = match self.popups.grab_popup(root.into(), kind, &seat, serial) {
             Ok(grab) => grab,
             Err(e) => return tracing::debug!("a popup's grab refused: {e:?}"),
         };

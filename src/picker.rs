@@ -243,10 +243,10 @@ impl Wayluck {
             if self.windows.is_owned(id) {
                 continue; // the window manager's own: a preview
             }
-            let Some(toplevel) = self.windows.get(id).and_then(|w| w.toplevel()) else {
+            let Some(window) = self.windows.get(id) else {
                 continue;
             };
-            let (title, app_id) = windows::names(toplevel);
+            let (title, app_id) = windows::names(window);
             let (title, app_id) = (title.unwrap_or_default(), app_id.unwrap_or_default());
             host.window(u32::from(id), title, app_id);
         }

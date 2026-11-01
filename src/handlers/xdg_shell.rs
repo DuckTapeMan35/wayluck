@@ -108,7 +108,10 @@ pub fn handle_commit(state: &mut Wayluck, surface: &WlSurface) {
     window.on_commit();
     // Size limits are set with a commit: the window manager hears changes.
     state.wm_size_hints(id);
-    let toplevel = window.toplevel().unwrap().clone();
+    // An X window's surface: Xwayland draws it when it likes.
+    let Some(toplevel) = window.toplevel().cloned() else {
+        return;
+    };
     if toplevel.is_initial_configure_sent() {
         return;
     }
@@ -140,7 +143,7 @@ fn fullscreen_request(state: &mut Wayluck, surface: &ToplevelSurface, on: bool) 
 
 /// A toplevel's title, or "(untitled)", for the log.
 fn title_of(surface: &ToplevelSurface) -> String {
-    windows::names(surface)
+    windows::toplevel_names(surface)
         .0
         .unwrap_or_else(|| "(untitled)".into())
 }

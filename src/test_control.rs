@@ -7,18 +7,22 @@
 //! - `move X Y`: the pointer to X, Y (logical, on the outputs' layout).
 //! - `button CODE down|up`: an evdev button (0x110 the left one, as 272).
 //! - `key CODE down|up`: an evdev key code (KEY_A is 30).
+//! - `windows`: each window on screen, `title@x,y,widthxheight`, "; "
+//!   between.
 //!
 //! It's at $XDG_RUNTIME_DIR/wayluck-test.<WAYLAND_DISPLAY>. Builds without
 //! the feature have none of this: the harness checks they refuse it.
 
-use crate::Wayluck;
+use crate::{Wayluck, windows};
 use smithay::{
-    backend::input::{ButtonState, KeyState},
-    input::keyboard::Keycode,
-    reexports::{
-        calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic},
-        wayland_server::Resource,
+    backend::{
+        input::{ButtonState, KeyState},
+        renderer::utils::with_renderer_surface_state,
     },
+    desktop::Window,
+    input::keyboard::Keycode,
+    reexports::calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic},
+    wayland::seat::WaylandFocus,
 };
 use std::{
     io::{Read, Write},
@@ -78,18 +82,6 @@ fn serve(mut stream: &UnixStream, partial: &mut Vec<u8>, state: &mut Wayluck) ->
         let line: Vec<u8> = partial.drain(..=end).collect();
         let command = String::from_utf8_lossy(&line);
         let answer = run(command.trim(), state);
-        // What it did, for a failing test's log.
-        let pointer = state.seat.get_pointer().map(|p| p.current_location());
-        let keyboard = (state.seat.get_keyboard()).and_then(|k| k.current_focus());
-        // And where windows are, to be clicked on.
-        let windows: Vec<_> = (state.space.elements())
-            .map(|w| state.space.element_bbox(w))
-            .collect();
-        tracing::debug!(
-            "test: {} -> {answer} (pointer at {pointer:?}, keyboard to {:?}, windows at {windows:?})",
-            command.trim(),
-            keyboard.map(|s| s.id())
-        );
         if stream.write_all(format!("{answer}\n").as_bytes()).is_err() {
             return PostAction::Remove;
         }
@@ -113,6 +105,21 @@ fn run(command: &str, state: &mut Wayluck) -> String {
                 state.socket_name.to_string_lossy(),
                 display.to_string_lossy()
             )
+        }
+        ["windows"] => {
+            let windows: Vec<String> = (state.space.elements())
+                .filter(|w| drawn(w))
+                .filter_map(|w| {
+                    let rect = state.space.element_geometry(w)?;
+                    let (title, _) = windows::names(w);
+                    let (x, y, width, height) = (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h);
+                    Some(format!(
+                        "{}@{x},{y},{width}x{height}",
+                        title.unwrap_or_default()
+                    ))
+                })
+                .collect();
+            windows.join("; ")
         }
         ["move", x, y] => match (x.parse(), y.parse()) {
             (Ok(x), Ok(y)) => {
@@ -147,4 +154,12 @@ fn run(command: &str, state: &mut Wayluck) -> String {
         },
         _ => format!("error: unknown command: {command}"),
     }
+}
+
+/// Has the window's surface a buffer? Until it has, nothing of it is on
+/// screen, and a click there goes through it.
+fn drawn(window: &Window) -> bool {
+    window.wl_surface().is_some_and(|surface| {
+        with_renderer_surface_state(&surface, |s| s.buffer().is_some()).unwrap_or(false)
+    })
 }

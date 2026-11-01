@@ -250,3 +250,83 @@ impl Dispatch<WlRegistry, GlobalListContents> for Client {
     ) {
     }
 }
+
+/// What a client listing windows (ext-foreign-toplevel-list, like lswt) is
+/// told: each window's title and app id.
+pub fn list_windows(session: &Session) -> Vec<(String, String)> {
+    use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
+        ext_foreign_toplevel_handle_v1::{self, ExtForeignToplevelHandleV1},
+        ext_foreign_toplevel_list_v1::{self, ExtForeignToplevelListV1},
+    };
+
+    #[derive(Default)]
+    struct Lister {
+        /// By handle: title, app id.
+        windows: Vec<(ExtForeignToplevelHandleV1, String, String)>,
+    }
+
+    impl Dispatch<ExtForeignToplevelListV1, ()> for Lister {
+        fn event(
+            lister: &mut Self,
+            _: &ExtForeignToplevelListV1,
+            event: ext_foreign_toplevel_list_v1::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let ext_foreign_toplevel_list_v1::Event::Toplevel { toplevel } = event {
+                lister
+                    .windows
+                    .push((toplevel, String::new(), String::new()));
+            }
+        }
+
+        wayland_client::event_created_child!(Lister, ExtForeignToplevelListV1, [
+            ext_foreign_toplevel_list_v1::EVT_TOPLEVEL_OPCODE => (ExtForeignToplevelHandleV1, ()),
+        ]);
+    }
+
+    impl Dispatch<ExtForeignToplevelHandleV1, ()> for Lister {
+        fn event(
+            lister: &mut Self,
+            handle: &ExtForeignToplevelHandleV1,
+            event: ext_foreign_toplevel_handle_v1::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            let Some(entry) = lister.windows.iter_mut().find(|(h, ..)| h == handle) else {
+                return;
+            };
+            match event {
+                ext_foreign_toplevel_handle_v1::Event::Title { title } => entry.1 = title,
+                ext_foreign_toplevel_handle_v1::Event::AppId { app_id } => entry.2 = app_id,
+                _ => {}
+            }
+        }
+    }
+
+    impl Dispatch<WlRegistry, GlobalListContents> for Lister {
+        fn event(
+            _: &mut Self,
+            _: &WlRegistry,
+            _: <WlRegistry as wayland_client::Proxy>::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+
+    let stream = UnixStream::connect(session.dir().join(&session.wayland_display)).unwrap();
+    let conn = Connection::from_socket(stream).unwrap();
+    let (globals, mut queue) = registry_queue_init::<Lister>(&conn).unwrap();
+    let _list: ExtForeignToplevelListV1 = globals.bind(&queue.handle(), 1..=1, ()).unwrap();
+    let mut lister = Lister::default();
+    // The windows, then what each is called.
+    queue.roundtrip(&mut lister).unwrap();
+    queue.roundtrip(&mut lister).unwrap();
+    (lister.windows.into_iter())
+        .map(|(_, title, app_id)| (title, app_id))
+        .collect()
+}

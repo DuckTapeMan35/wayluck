@@ -79,10 +79,10 @@ impl Wayluck {
     }
 
     fn send_names(&self, handle: &ExtForeignToplevelHandleV1, id: WindowId) {
-        let Some(toplevel) = self.windows.get(id).and_then(|w| w.toplevel()) else {
+        let Some(window) = self.windows.get(id) else {
             return;
         };
-        let (title, app_id) = windows::names(toplevel);
+        let (title, app_id) = windows::names(window);
         handle.title(title.unwrap_or_default());
         handle.app_id(app_id.unwrap_or_default());
     }

@@ -3,7 +3,9 @@
 //! in the surface's own data).
 
 use crate::{
-    Wayluck, image_capture, layers,
+    Wayluck,
+    focus::KeyboardFocus,
+    image_capture, layers,
     protocol::wayluck_wm_transaction_v1::WayluckWmTransactionV1,
     render::Border,
     rounded::Outline,
@@ -19,8 +21,10 @@ use smithay::{
     utils::{Logical, Rectangle, SERIAL_COUNTER, Serial, Size},
     wayland::{
         compositor::{add_pre_commit_hook, with_states},
+        seat::WaylandFocus,
         shell::xdg::{ToplevelStateSet, ToplevelSurface, XdgToplevelSurfaceData},
     },
+    xwayland::X11Surface,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -64,17 +68,23 @@ pub struct Windows {
 }
 
 impl Windows {
-    /// Keep window under a new id, and tag its surface with it.
+    /// Keep window under a new id, and tag its surface with it (an X
+    /// window has one by then: surface_associated, handlers/xwayland.rs).
     pub fn insert(&mut self, window: Window) -> WindowId {
         self.next += 1;
         let id = WindowId(self.next);
-        if let Some(toplevel) = window.toplevel() {
-            with_states(toplevel.wl_surface(), |s| {
-                s.data_map.insert_if_missing(|| id)
-            });
+        if let Some(surface) = window.wl_surface() {
+            with_states(&surface, |s| s.data_map.insert_if_missing(|| id));
         }
         self.by_id.insert(id, window);
         id
+    }
+
+    /// The window an X window is, if it's shown (mapped).
+    pub fn find_x11(&self, x11: &X11Surface) -> Option<WindowId> {
+        (self.by_id.iter())
+            .find(|(_, w)| w.x11_surface() == Some(x11))
+            .map(|(id, _)| *id)
     }
 
     pub fn remove(&mut self, id: WindowId) -> Option<Window> {
@@ -140,8 +150,21 @@ impl Windows {
 /// A window's title and app id, as far as its client has said.
 pub type Names = (Option<String>, Option<String>);
 
-/// What a client called its window.
-pub fn names(toplevel: &ToplevelSurface) -> Names {
+/// What a client called its window: an X window's title, and its class
+/// (WM_CLASS's second half) as its app id.
+pub fn names(window: &Window) -> Names {
+    if let Some(x11) = window.x11_surface() {
+        let some = |s: String| Some(s).filter(|s| !s.is_empty());
+        return (some(x11.title()), some(x11.class()));
+    }
+    match window.toplevel() {
+        Some(toplevel) => toplevel_names(toplevel),
+        None => (None, None),
+    }
+}
+
+/// What a Wayland client called its window.
+pub fn toplevel_names(toplevel: &ToplevelSurface) -> Names {
     with_states(toplevel.wl_surface(), |states| {
         let data = states
             .data_map
@@ -404,18 +427,18 @@ impl Wayluck {
 
     /// The keyboard to whoever should have it: a layer surface holding it, else the focused window.
     pub fn give_keyboard(&mut self) {
-        let surface = match &self.layer_focus {
-            Some(layer) => Some(layer.wl_surface().clone()),
-            None => self
-                .windows
-                .focused
+        let focus = match &self.layer_focus {
+            Some(layer) => Some(KeyboardFocus::from(layer.wl_surface().clone())),
+            None => (self.windows.focused)
                 .and_then(|id| self.windows.get(id))
-                .and_then(|w| w.toplevel())
-                .map(|t| t.wl_surface().clone()),
+                .and_then(|w| match w.x11_surface() {
+                    Some(x11) => KeyboardFocus::x11(x11),
+                    None => w.toplevel().map(|t| t.wl_surface().clone().into()),
+                }),
         };
         let keyboard = self.seat.get_keyboard().unwrap();
-        if keyboard.current_focus() != surface {
-            keyboard.set_focus(self, surface, SERIAL_COUNTER.next_serial());
+        if keyboard.current_focus() != focus {
+            keyboard.set_focus(self, focus, SERIAL_COUNTER.next_serial());
         }
     }
 
