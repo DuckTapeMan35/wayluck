@@ -26,7 +26,7 @@ use smithay::{
         Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, backend::ClientId,
     },
     utils::{Logical, Point, Rectangle},
-    wayland::{compositor::with_states, shell::xdg::SurfaceCachedState},
+    wayland::{compositor::with_states, seat::WaylandFocus, shell::xdg::SurfaceCachedState},
 };
 use std::{cell::Cell, collections::HashMap, sync::Mutex};
 
@@ -563,13 +563,18 @@ impl Wayluck {
         // Nothing is shown until it says what (its first transaction).
         self.scenes.show_nothing();
         self.sync_space();
-        // Windows that have committed; the rest are announced at their first commit.
+        // Windows that have committed (and X windows); the rest are
+        // announced at their first commit.
+        // Nothing is shown until it says what (its first transaction).
+        self.scenes.show_nothing();
+        self.sync_space();
         let ids: Vec<WindowId> = self
             .windows
             .ids()
             .filter(|&id| {
-                (self.windows.get(id).and_then(|w| w.toplevel()))
-                    .is_some_and(|t| t.is_initial_configure_sent())
+                // An X window is one once it's shown.
+                (self.windows.get(id))
+                    .is_some_and(|w| w.toplevel().is_none_or(|t| t.is_initial_configure_sent()))
             })
             .collect();
         for id in ids {
@@ -669,10 +674,7 @@ impl Wayluck {
         let Some(resource) = self.wm.windows.get(&id) else {
             return;
         };
-        let parent = (self.windows.get(id).and_then(|w| w.toplevel()))
-            .and_then(|t| t.parent())
-            .and_then(|surface| Windows::id_of(&surface))
-            .and_then(|parent| self.wm.windows.get(&parent));
+        let parent = (self.windows.parent(id)).and_then(|parent| self.wm.windows.get(&parent));
         resource.parent(parent);
     }
 
@@ -682,17 +684,26 @@ impl Wayluck {
         let Some(resource) = self.wm.windows.get(&id) else {
             return;
         };
-        let Some(toplevel) = self.windows.get(id).and_then(|w| w.toplevel()) else {
+        let Some(window) = self.windows.get(id) else {
             return;
         };
-        with_states(toplevel.wl_surface(), |s| {
-            let limits = *s.cached_state.get::<SurfaceCachedState>().current();
-            let hints = [
-                limits.min_size.w,
-                limits.min_size.h,
-                limits.max_size.w,
-                limits.max_size.h,
-            ];
+        let Some(surface) = window.wl_surface() else {
+            return;
+        };
+        // An X window's are its WM_NORMAL_HINTS; a Wayland window's come
+        // with a commit.
+        let (min, max) = match window.x11_surface() {
+            Some(x11) => (
+                x11.min_size().unwrap_or_default(),
+                x11.max_size().unwrap_or_default(),
+            ),
+            None => with_states(&surface, |s| {
+                let limits = *s.cached_state.get::<SurfaceCachedState>().current();
+                (limits.min_size, limits.max_size)
+            }),
+        };
+        let hints = [min.w, min.h, max.w, max.h];
+        with_states(&surface, |s| {
             s.data_map.insert_if_missing(SentHints::default);
             let sent = &s.data_map.get::<SentHints>().unwrap().0;
             if sent.replace(Some(hints)) != Some(hints) {
@@ -825,8 +836,15 @@ impl Dispatch<WayluckWmWindowV1, WindowId> for Wayluck {
         match request {
             // Asking the client: it may close, or not.
             wayluck_wm_window_v1::Request::Close => {
-                if let Some(t) = state.windows.get(*id).and_then(|w| w.toplevel()) {
+                let Some(window) = state.windows.get(*id) else {
+                    return;
+                };
+                if let Some(t) = window.toplevel() {
                     t.send_close();
+                } else if let Some(x11) = window.x11_surface()
+                    && let Err(e) = x11.close()
+                {
+                    tracing::debug!("X: can't close window {}: {e}", x11.window_id());
                 }
             }
             wayluck_wm_window_v1::Request::Destroy => {}

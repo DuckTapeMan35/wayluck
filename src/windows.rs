@@ -80,6 +80,19 @@ impl Windows {
         id
     }
 
+    /// The window id belongs to, for example: a dialog's main window.
+    /// An X window's is the one it's WM_TRANSIENT_FOR.
+    pub fn parent(&self, id: WindowId) -> Option<WindowId> {
+        let window = self.get(id)?;
+        if let Some(x11) = window.x11_surface() {
+            let parent = x11.is_transient_for()?;
+            return (self.by_id.iter())
+                .find(|(_, w)| w.x11_surface().is_some_and(|p| p.window_id() == parent))
+                .map(|(id, _)| *id);
+        }
+        Self::id_of(&window.toplevel()?.parent()?)
+    }
+
     /// The window an X window is, if it's shown (mapped).
     pub fn find_x11(&self, x11: &X11Surface) -> Option<WindowId> {
         (self.by_id.iter())
@@ -272,30 +285,47 @@ impl Wayluck {
         for change in &changes {
             match *change {
                 Change::Place(_, id, rect) => {
-                    let toplevel = self.windows.get(id).unwrap().toplevel().unwrap();
-                    let before = toplevel.with_pending_state(|s| s.size.replace(rect.size));
-                    // A window not configured yet has nothing on screen to keep.
-                    if before != Some(rect.size) && toplevel.is_initial_configure_sent() {
-                        resized.push(id);
+                    let window = self.windows.get(id).unwrap();
+                    if let Some(toplevel) = window.toplevel() {
+                        let before = toplevel.with_pending_state(|s| s.size.replace(rect.size));
+                        // A window not configured yet has nothing on screen to keep.
+                        if before != Some(rect.size) && toplevel.is_initial_configure_sent() {
+                            resized.push(id);
+                        }
+                    } else if let Some(x11) = window.x11_surface() {
+                        // Told at once, and not waited for: where it goes, it
+                        // hears when it's shown there (sync_space).
+                        let rect = Rectangle::new(x11.geometry().loc, rect.size);
+                        if let Err(e) = x11.configure(rect) {
+                            tracing::debug!("X: can't resize window {}: {e}", x11.window_id());
+                        }
                     }
                     self.windows.decided.insert(id);
                 }
                 Change::Hide(id) => {
                     self.windows.decided.insert(id);
                 }
+                // X has no tiled state to tell.
                 Change::Tiled(id, edges) => {
-                    let toplevel = self.windows.get(id).unwrap().toplevel().unwrap();
-                    toplevel.with_pending_state(|s| set_tiled(&mut s.states, edges));
+                    if let Some(toplevel) = self.windows.get(id).unwrap().toplevel() {
+                        toplevel.with_pending_state(|s| set_tiled(&mut s.states, edges));
+                    }
                 }
                 Change::Fullscreen(id, on) => {
-                    let toplevel = self.windows.get(id).unwrap().toplevel().unwrap();
-                    toplevel.with_pending_state(|s| {
-                        if on {
-                            s.states.set(xdg_toplevel::State::Fullscreen);
-                        } else {
-                            s.states.unset(xdg_toplevel::State::Fullscreen);
-                        }
-                    });
+                    let window = self.windows.get(id).unwrap();
+                    if let Some(toplevel) = window.toplevel() {
+                        toplevel.with_pending_state(|s| {
+                            if on {
+                                s.states.set(xdg_toplevel::State::Fullscreen);
+                            } else {
+                                s.states.unset(xdg_toplevel::State::Fullscreen);
+                            }
+                        });
+                    } else if let Some(x11) = window.x11_surface()
+                        && let Err(e) = x11.set_fullscreen(on)
+                    {
+                        tracing::debug!("X: can't tell window {}: {e}", x11.window_id());
+                    }
                 }
                 Change::Focus(_)
                 | Change::Outlines(_)

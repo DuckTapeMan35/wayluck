@@ -1,6 +1,6 @@
 //! X clients: Xwayland, and wayluck as its X window manager (smithay's
 //! X11Wm). An X window it shows is a window like any other:
-//! for now, only when there's no window manager.
+//! the window manager places it, and hears what its client asks.
 
 use crate::Wayluck;
 use smithay::{
@@ -11,10 +11,10 @@ use smithay::{
     wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState},
     xwayland::{
         X11Surface, X11Wm, XWayland, XWaylandEvent, XwmHandler,
-        xwm::{Reorder, ResizeEdge, X11Window, XwmId},
+        xwm::{Reorder, ResizeEdge, WmWindowProperty, X11Window, XwmId},
     },
 };
-use std::process::Stdio;
+use std::{process::Stdio, sync::Mutex};
 
 impl Wayluck {
     /// Start Xwayland (on its own display number), and be its window
@@ -61,12 +61,12 @@ impl XWaylandShellHandler for Wayluck {
     }
 
     /// Xwayland made the surface a shown X window is drawn on: from now on
-    /// it's a window like the others (until a window manager can place X
-    /// windows, only without one), cascading. Not before: clicks and keys
-    /// reach it through its surface.
+    /// it's a window like the others, which the window manager hears of
+    /// (without one, it cascades). Not before: clicks and keys reach it
+    /// through its surface.
     fn surface_associated(&mut self, _xwm: XwmId, _surface: WlSurface, window: X11Surface) {
         let managed = !window.is_override_redirect() && window.is_mapped();
-        if !managed || self.wm.manager.is_some() || self.windows.find_x11(&window).is_some() {
+        if !managed || self.windows.find_x11(&window).is_some() {
             return;
         }
         let id = self.add_window(Window::new_x11_window(window.clone()));
@@ -77,8 +77,19 @@ impl XWaylandShellHandler for Wayluck {
         );
         // Clients listing windows hear of it (toplevel_list.rs).
         self.list_window(id);
+        // The window manager too, with everything its client set up first
+        // (names, parent, size limits; fullscreen, if it asked already).
+        self.wm_window_added(id);
+        if let Some(on) = window.user_data().get::<AskedFullscreen>() {
+            self.wm_fullscreen_request(id, *on.0.lock().unwrap());
+        }
     }
 }
+
+/// An X window asked to be fullscreen (or not) before it was a window:
+/// the window manager hears so with it.
+#[derive(Default)]
+struct AskedFullscreen(Mutex<bool>);
 
 delegate_xwayland_shell!(Wayluck);
 
@@ -99,12 +110,8 @@ impl XwmHandler for Wayluck {
     }
 
     /// An X client wants its window shown: mapped, Xwayland makes it a
-    /// surface (surface_associated, above). Until a window manager can
-    /// place X windows, only without one.
+    /// surface (surface_associated, above).
     fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        if self.wm.manager.is_some() {
-            return tracing::info!("X: window {} not shown yet", window.window_id());
-        }
         if let Err(e) = window.set_mapped(true) {
             tracing::warn!("X: can't show window {}: {e}", window.window_id());
         }
@@ -146,22 +153,55 @@ impl XwmHandler for Wayluck {
             "X: window {} asks for {x:?},{y:?} {w:?}x{h:?}",
             window.window_id()
         );
-        // Its size it may pick (as a Wayland client does); where it is, it
-        // may not, once it's shown. X needs an answer either way.
+        // Its size it may pick (as a Wayland client does), until the
+        // window manager has placed it; where it is, only until it's shown.
+        // X needs an answer either way.
+        let id = self.windows.find_x11(&window);
+        let placed = id.is_some_and(|id| self.wm.manager.is_some() && self.windows.decided(id));
         let mut rect = window.geometry();
-        if let Some(w) = w {
-            rect.size.w = w as i32;
+        if !placed {
+            rect.size.w = w.map_or(rect.size.w, |w| w as i32);
+            rect.size.h = h.map_or(rect.size.h, |h| h as i32);
         }
-        if let Some(h) = h {
-            rect.size.h = h as i32;
-        }
-        if self.windows.find_x11(&window).is_none() {
+        if id.is_none() {
             rect.loc.x = x.unwrap_or(rect.loc.x);
             rect.loc.y = y.unwrap_or(rect.loc.y);
         }
         if let Err(e) = window.configure(rect) {
             tracing::debug!("X: can't configure window {}: {e}", window.window_id());
         }
+    }
+
+    /// What a client called its window changed, or its parent, or its size
+    /// limits: the window manager hears (and clients listing windows).
+    fn property_notify(&mut self, _xwm: XwmId, window: X11Surface, property: WmWindowProperty) {
+        let Some(id) = self.windows.find_x11(&window) else {
+            return;
+        };
+        match property {
+            WmWindowProperty::Title => {
+                self.wm_window_title(id);
+                self.list_names_changed(id);
+            }
+            WmWindowProperty::Class => {
+                self.wm_window_app_id(id);
+                self.list_names_changed(id);
+            }
+            WmWindowProperty::TransientFor => self.wm_window_parent(id),
+            WmWindowProperty::NormalHints => self.wm_size_hints(id),
+            _ => {}
+        }
+    }
+
+    // Fullscreen is the window manager's to give: a client's asking goes
+    // to it, and its answer comes in a transaction. Without one, nothing
+    // changes.
+    fn fullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        fullscreen_request(self, &window, true);
+    }
+
+    fn unfullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        fullscreen_request(self, &window, false);
     }
 
     fn configure_notify(
@@ -183,4 +223,19 @@ impl XwmHandler for Wayluck {
     }
 
     fn move_request(&mut self, _xwm: XwmId, _window: X11Surface, _button: u32) {}
+}
+
+/// An X client asked for its window to be fullscreen (on), or not: the
+/// window manager hears, now or (before it's a window) with it.
+fn fullscreen_request(state: &mut Wayluck, window: &X11Surface, on: bool) {
+    match state.windows.find_x11(window) {
+        Some(id) => {
+            state.wm_fullscreen_request(id, on);
+        }
+        None => {
+            let asked = window.user_data();
+            asked.insert_if_missing_threadsafe(AskedFullscreen::default);
+            *asked.get::<AskedFullscreen>().unwrap().0.lock().unwrap() = on;
+        }
+    }
 }
