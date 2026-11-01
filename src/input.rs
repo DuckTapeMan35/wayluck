@@ -37,14 +37,19 @@ impl Wayluck {
     }
 
     fn on_key<I: InputBackend>(&mut self, event: I::KeyboardKeyEvent) {
+        self.key(event.key_code(), event.state(), event.time_msec());
+    }
+
+    /// A key went down or up: wayluck's own keys and the window manager's
+    /// bindings first, then the focused client.
+    pub fn key(&mut self, code: Keycode, key_state: KeyState, time: u32) {
         let keyboard = self.seat.get_keyboard().unwrap();
-        let (code, key_state) = (event.key_code(), event.state());
         keyboard.input::<(), _>(
             self,
             code,
             key_state,
             SERIAL_COUNTER.next_serial(),
-            event.time_msec(),
+            time,
             |state, mods, keysym| state.filter_key(code, key_state, mods, keysym),
         );
     }
@@ -195,17 +200,19 @@ impl Wayluck {
     }
 
     fn on_button<I: InputBackend>(&mut self, event: I::PointerButtonEvent) {
+        self.button(event.button_code(), event.state(), event.time_msec());
+    }
+
+    /// A pointer button went down or up (an evdev code: 0x110 is the left).
+    pub fn button(&mut self, code: u32, state: ButtonState, time: u32) {
         let pointer = self.seat.get_pointer().unwrap();
         let serial = SERIAL_COUNTER.next_serial();
-        let state = event.state();
         // A button the window manager bound, or any while it drags: not
         // the client's.
         let mods = self.seat.get_keyboard().unwrap().modifier_state();
         let pressed = state == ButtonState::Pressed;
 
-        if self.wm_button(event.button_code(), pressed, wm::modifier_bits(&mods))
-            || self.wm.pointer_grabbed
-        {
+        if self.wm_button(code, pressed, wm::modifier_bits(&mods)) || self.wm.pointer_grabbed {
             return;
         }
 
@@ -221,6 +228,7 @@ impl Wayluck {
                     self.scenes.raise(id);
                     self.sync_space();
                 }
+                self.focus(clicked);
             } else if let Some(id) = clicked {
                 self.wm_focus_request(id);
             }
@@ -228,10 +236,10 @@ impl Wayluck {
         pointer.button(
             self,
             &ButtonEvent {
-                button: event.button_code(),
+                button: code,
                 state,
                 serial,
-                time: event.time_msec(),
+                time,
             },
         );
         pointer.frame(self);

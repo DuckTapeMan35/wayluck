@@ -6,8 +6,8 @@
 
 use crate::{
     Wayluck,
+    handlers::compositor_state_of,
     protocol::wayluck_wm_transaction_v1::WayluckWmTransactionV1,
-    state::ClientState,
     windows::{Change, WindowId, Windows},
 };
 use smithay::{
@@ -152,8 +152,8 @@ impl Wayluck {
         p.shown.store(true, Ordering::Release);
         let dh = self.display_handle.clone();
         for client in p.held {
-            if let Some(data) = client.get_data::<ClientState>() {
-                data.compositor_state.blocker_cleared(self, &dh);
+            if let Some(state) = compositor_state_of(&client) {
+                state.blocker_cleared(self, &dh);
             }
         }
         self.show(p.changes);

@@ -17,10 +17,28 @@ xcursor = "0.3.11"
 fontdue = "0.9.5"
 wayland-protocols = { version = "0.32.13", features = ["client", "server", "staging"] }
 
+[dev-dependencies]
+# The tests' X clients: what an X program can do.
+x11rb = { version = "0.14.0", features = ["xinput"] }
+
+[[test]]
+name = "security"
+required-features = ["test-harness"]
+
+[[test]]
+name = "attackers"
+required-features = ["test-harness"]
+
+[features]
+# For wayluck's tests (tests/): a headless backend (--headless), and later
+# a way for tests to drive input. Never in a build that's installed.
+test-harness = []
+
 [dependencies.smithay]
 version = "0.7.0"
 default-features = false
 features = [
+  "xwayland",
   "backend_winit",
   "backend_drm",
   "backend_gbm",

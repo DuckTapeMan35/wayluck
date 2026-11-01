@@ -7,8 +7,10 @@ mod dmabuf;
 mod layer_shell;
 mod syncobj;
 mod xdg_shell;
+mod xwayland;
 
 use crate::Wayluck;
+pub use compositor::compositor_state_of;
 pub use layer_shell::layer_committed;
 use smithay::{
     delegate_data_device, delegate_output, delegate_seat,

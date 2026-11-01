@@ -3,6 +3,8 @@
 mod atomic;
 mod cursor;
 mod handlers;
+#[cfg(feature = "test-harness")]
+mod headless;
 mod image_capture;
 mod input;
 mod layers;
@@ -15,6 +17,8 @@ mod rounded;
 mod scenes;
 mod screencopy;
 mod state;
+#[cfg(feature = "test-harness")]
+mod test_control;
 mod toplevel_list;
 mod udev;
 mod virtual_output;
@@ -51,16 +55,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut event_loop: EventLoop<Wayluck> = EventLoop::try_new()?;
     let display: Display<Wayluck> = Display::new()?;
     let mut state = Wayluck::new(&mut event_loop, display);
-    // Until a window manager comes: wayluck's own scene.
-    state.show_own_scene();
     tracing::info!("listening on {}", state.socket_name.to_string_lossy());
 
     let args = Args::parse()?;
     if args.drm {
         udev::init(&mut event_loop, &mut state)?;
+    } else if args.headless() {
+        #[cfg(feature = "test-harness")]
+        {
+            headless::init(&mut event_loop, &mut state)?;
+            test_control::init(&mut event_loop, &state)?;
+        }
     } else {
         winit::init(&mut event_loop, &mut state)?;
     }
+    // Until a window manager comes: wayluck's own scene (scenes.rs).
+    state.show_own_scene();
+    // X clients (handlers/xwayland.rs): before anything is started, so
+    // it's told the display.
+    state.start_xwayland(&event_loop.handle());
 
     // On the hardware, wayluck is the session: services started for it
     // hear where it is before anything else starts.
@@ -106,13 +119,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// What programs in wayluck's session are told about it.
-fn session_env(state: &Wayluck) -> [(&'static str, &OsStr); 3] {
-    [
-        ("WAYLAND_DISPLAY", &state.socket_name),
+/// What programs in wayluck's session are told about it: DISPLAY too, if
+/// Xwayland started.
+fn session_env(state: &Wayluck) -> Vec<(&'static str, &OsStr)> {
+    let mut env = vec![
+        ("WAYLAND_DISPLAY", state.socket_name.as_os_str()),
         ("XDG_CURRENT_DESKTOP", OsStr::new("wayluck")),
         ("XDG_SESSION_TYPE", OsStr::new("wayland")),
-    ]
+    ];
+    if let Some(display) = &state.x_display {
+        env.push(("DISPLAY", display.as_os_str()));
+    }
+    env
 }
 
 /// Tell D-Bus and systemd's user manager about the session too, so that
@@ -123,8 +141,8 @@ fn import_environment(state: &Wayluck) {
     let env = session_env(state);
     let imported = Command::new("dbus-update-activation-environment")
         .arg("--systemd")
-        .args(env.map(|(name, _)| name))
-        .envs(env)
+        .args(env.iter().map(|(name, _)| name))
+        .envs(env.iter().copied())
         .status();
     match imported {
         Ok(status) if status.success() => tracing::info!("session environment imported"),
@@ -150,11 +168,22 @@ struct Args {
     command: Option<String>,
     /// --drm: run on the hardware, from a TTY, instead of as a window.
     drm: bool,
+    /// --headless (tests only): an output drawn offscreen, no window.
+    #[cfg(feature = "test-harness")]
+    headless: bool,
     /// --exit-after <seconds>: stop on its own.
     exit_after: Option<Duration>,
 }
 
 impl Args {
+    /// --headless, which only test builds have.
+    fn headless(&self) -> bool {
+        #[cfg(feature = "test-harness")]
+        return self.headless;
+        #[cfg(not(feature = "test-harness"))]
+        false
+    }
+
     fn parse() -> Result<Self, String> {
         let mut parsed = Args::default();
         let mut args = std::env::args().skip(1);
@@ -162,6 +191,8 @@ impl Args {
             match arg.as_str() {
                 "-c" => parsed.command = Some(args.next().ok_or("-c needs a command")?),
                 "--drm" => parsed.drm = true,
+                #[cfg(feature = "test-harness")]
+                "--headless" => parsed.headless = true,
                 "--exit-after" => {
                     let secs = args.next().ok_or("--exit-after needs seconds")?;
                     let secs: u64 = secs.parse().map_err(|_| format!("not seconds: {secs}"))?;

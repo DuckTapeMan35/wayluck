@@ -42,7 +42,9 @@ use smithay::{
         },
         shm::ShmState,
         socket::ListeningSocketSource,
+        xwayland_shell::XWaylandShellState,
     },
+    xwayland::X11Wm,
 };
 use std::{ffi::OsString, sync::Arc};
 
@@ -113,6 +115,12 @@ pub struct Wayluck {
     pub ext_data_control_state: ext_data_control::DataControlState,
     pub xdg_decoration_state: XdgDecorationState,
     pub layer_shell_state: WlrLayerShellState,
+    /// X clients: which X window is which surface.
+    pub xwayland_shell_state: XWaylandShellState,
+    /// wayluck as Xwayland's window manager, once Xwayland is ready.
+    pub xwm: Option<X11Wm>,
+    /// Xwayland's display (":1"), for programs started in the session.
+    pub x_display: Option<OsString>,
     pub dmabuf_state: DmabufState,
     /// Explicit sync, if the GPU's driver can.
     pub syncobj_state: Option<DrmSyncobjState>,
@@ -144,6 +152,7 @@ impl Wayluck {
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
         // Bars, wallpapers, notifications (handlers/layer_shell.rs).
         let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
+        let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
         let wm = WmState::new(&dh);
@@ -189,6 +198,9 @@ impl Wayluck {
             ext_data_control_state,
             xdg_decoration_state,
             layer_shell_state,
+            xwayland_shell_state,
+            xwm: None,
+            x_display: None,
             // Its global is made by the backend, which knows the formats.
             dmabuf_state: DmabufState::new(),
             syncobj_state: None,

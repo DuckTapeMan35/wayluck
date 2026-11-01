@@ -1,0 +1,150 @@
+//! For tests only
+//! drives wayluck through, as a person at the keyboard would. One command a
+//! line; each is answered "ok" (or a value) once done, so the test can wait.
+//!
+//! - `env`: the session's WAYLAND_DISPLAY and DISPLAY (empty until Xwayland
+//!   is ready), on one line.
+//! - `move X Y`: the pointer to X, Y (logical, on the outputs' layout).
+//! - `button CODE down|up`: an evdev button (0x110 the left one, as 272).
+//! - `key CODE down|up`: an evdev key code (KEY_A is 30).
+//!
+//! It's at $XDG_RUNTIME_DIR/wayluck-test.<WAYLAND_DISPLAY>. Builds without
+//! the feature have none of this: the harness checks they refuse it.
+
+use crate::Wayluck;
+use smithay::{
+    backend::input::{ButtonState, KeyState},
+    input::keyboard::Keycode,
+    reexports::{
+        calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic},
+        wayland_server::Resource,
+    },
+};
+use std::{
+    io::{Read, Write},
+    os::unix::net::{UnixListener, UnixStream},
+    path::PathBuf,
+};
+
+/// evdev codes are XKB's less 8.
+const XKB_OFFSET: u32 = 8;
+
+pub fn init(event_loop: &mut EventLoop<Wayluck>, state: &Wayluck) -> std::io::Result<()> {
+    let dir = std::env::var_os("XDG_RUNTIME_DIR").ok_or(std::io::ErrorKind::NotFound)?;
+    let mut name = std::ffi::OsString::from("wayluck-test.");
+    name.push(&state.socket_name);
+    let path = PathBuf::from(dir).join(name);
+    let _ = std::fs::remove_file(&path);
+    let listener = UnixListener::bind(&path)?;
+    listener.set_nonblocking(true)?;
+    tracing::info!("test control at {}", path.display());
+    let handle = event_loop.handle();
+    let source = Generic::new(listener, Interest::READ, Mode::Level);
+    event_loop
+        .handle()
+        .insert_source(source, move |_, listener, _| {
+            // A test connects; its commands are read as they come.
+            if let Ok((stream, _)) = listener.accept() {
+                let _ = stream.set_nonblocking(true);
+                let source = Generic::new(stream, Interest::READ, Mode::Level);
+                // What's come of a line not finished yet.
+                let mut partial = Vec::new();
+                let added = handle.insert_source(source, move |_, stream, state| {
+                    Ok(serve(stream, &mut partial, state))
+                });
+                if let Err(e) = added {
+                    tracing::warn!("test control: {e}");
+                }
+            }
+            Ok(PostAction::Continue)
+        })
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    Ok(())
+}
+
+/// Run the commands that have come in full, answering each; Remove once
+/// the test hangs up.
+fn serve(mut stream: &UnixStream, partial: &mut Vec<u8>, state: &mut Wayluck) -> PostAction {
+    let mut buf = [0; 1024];
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => return PostAction::Remove,
+            Ok(n) => partial.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(_) => return PostAction::Remove,
+        }
+    }
+    while let Some(end) = partial.iter().position(|b| *b == b'\n') {
+        let line: Vec<u8> = partial.drain(..=end).collect();
+        let command = String::from_utf8_lossy(&line);
+        let answer = run(command.trim(), state);
+        // What it did, for a failing test's log.
+        let pointer = state.seat.get_pointer().map(|p| p.current_location());
+        let keyboard = (state.seat.get_keyboard()).and_then(|k| k.current_focus());
+        // And where windows are, to be clicked on.
+        let windows: Vec<_> = (state.space.elements())
+            .map(|w| state.space.element_bbox(w))
+            .collect();
+        tracing::debug!(
+            "test: {} -> {answer} (pointer at {pointer:?}, keyboard to {:?}, windows at {windows:?})",
+            command.trim(),
+            keyboard.map(|s| s.id())
+        );
+        if stream.write_all(format!("{answer}\n").as_bytes()).is_err() {
+            return PostAction::Remove;
+        }
+    }
+    PostAction::Continue
+}
+
+fn run(command: &str, state: &mut Wayluck) -> String {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    let time = state.start_time.elapsed().as_millis() as u32;
+    let pressed = |word: &str| match word {
+        "down" => Some(true),
+        "up" => Some(false),
+        _ => None,
+    };
+    match words.as_slice() {
+        ["env"] => {
+            let display = state.x_display.as_deref().unwrap_or_default();
+            format!(
+                "WAYLAND_DISPLAY={} DISPLAY={}",
+                state.socket_name.to_string_lossy(),
+                display.to_string_lossy()
+            )
+        }
+        ["move", x, y] => match (x.parse(), y.parse()) {
+            (Ok(x), Ok(y)) => {
+                state.move_pointer((x, y).into(), time);
+                "ok".into()
+            }
+            _ => "error: move X Y".into(),
+        },
+        ["button", code, how] => match (code.parse(), pressed(how)) {
+            (Ok(code), Some(down)) => {
+                let how = if down {
+                    ButtonState::Pressed
+                } else {
+                    ButtonState::Released
+                };
+                state.button(code, how, time);
+                "ok".into()
+            }
+            _ => "error: button CODE down|up".into(),
+        },
+        ["key", code, how] => match (code.parse::<u32>(), pressed(how)) {
+            (Ok(code), Some(down)) => {
+                let how = if down {
+                    KeyState::Pressed
+                } else {
+                    KeyState::Released
+                };
+                state.key(Keycode::new(code + XKB_OFFSET), how, time);
+                "ok".into()
+            }
+            _ => "error: key CODE down|up".into(),
+        },
+        _ => format!("error: unknown command: {command}"),
+    }
+}

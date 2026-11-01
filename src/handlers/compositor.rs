@@ -15,7 +15,17 @@ use smithay::{
         },
         shm::{ShmHandler, ShmState},
     },
+    xwayland::XWaylandClientData,
 };
+
+/// A client's surfaces' state: every client is wayluck's (ClientState), but
+/// Xwayland, which smithay connects with its own data.
+pub fn compositor_state_of(client: &Client) -> Option<&CompositorClientState> {
+    if let Some(data) = client.get_data::<ClientState>() {
+        return Some(&data.compositor_state);
+    }
+    (client.get_data::<XWaylandClientData>()).map(|data| &data.compositor_state)
+}
 
 impl CompositorHandler for Wayluck {
     fn compositor_state(&mut self) -> &mut CompositorState {
@@ -23,7 +33,7 @@ impl CompositorHandler for Wayluck {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
-        &client.get_data::<ClientState>().unwrap().compositor_state
+        compositor_state_of(client).expect("a client without wayluck's or Xwayland's data")
     }
 
     fn commit(&mut self, surface: &WlSurface) {

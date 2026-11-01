@@ -48,7 +48,12 @@
           postFixup = ''
             wrapProgram $out/bin/wayluck \
               --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (runtimeLibs pkgs)} \
-              --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.fontconfig ]}
+              --prefix PATH : ${
+                pkgs.lib.makeBinPath [
+                  pkgs.fontconfig
+                  pkgs.xwayland
+                ]
+              }
           '';
         };
       });
@@ -62,6 +67,12 @@
             rust-analyzer
             pkg-config
             wayland-utils
+            # The tests (cargo test --features test-harness): Xwayland for
+            # every session; Xvfb (in xorg-server) and xdotool for
+            # tests/attackers.rs.
+            xwayland
+            xorg-server
+            xdotool
           ];
           buildInputs = with pkgs; [
             libxkbcommon

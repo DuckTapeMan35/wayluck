@@ -294,6 +294,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "core_detect"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
+
+[[package]]
 name = "core_maths"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -408,6 +414,20 @@ checksum = "ecc8e1361066d91f5ffccff060a3c3be9c3ecde15be2959c1937595f7a82a9f8"
 dependencies = [
  "libc",
  "linux-raw-sys 0.9.4",
+]
+
+[[package]]
+name = "encoding_rs"
+version = "0.8.42"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e985e0451871ad22fb8d2b6b076e2028a502a0d3950998c2c5c0a4f9b5d9679"
+dependencies = [
+ "cfg-if",
+ "core_detect",
+ "multiversion_no_op",
+ "rustversion",
+ "scopeguard",
+ "simdutf8",
 ]
 
 [[package]]
@@ -851,6 +871,12 @@ checksum = "6b0ca1155a9ecc25aa12e8313a119f32edf0255fea2f44839c4ac0a12b2ac157"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "multiversion_no_op"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
 name = "ndk"
@@ -1402,6 +1428,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294"
 
 [[package]]
+name = "scopeguard"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
 name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1508,6 +1540,7 @@ dependencies = [
  "drm",
  "drm-ffi",
  "drm-fourcc",
+ "encoding_rs",
  "errno",
  "gbm",
  "gl_generator",
@@ -1520,6 +1553,7 @@ dependencies = [
  "profiling",
  "rand",
  "rustix 1.1.6",
+ "scopeguard",
  "sha2",
  "smallvec",
  "tempfile",
@@ -1534,6 +1568,7 @@ dependencies = [
  "wayland-protocols-wlr",
  "wayland-server",
  "winit",
+ "x11rb 0.13.2",
  "xkbcommon",
 ]
 
@@ -2043,6 +2078,7 @@ dependencies = [
  "wayland-protocols",
  "wayland-scanner",
  "wayland-server",
+ "x11rb 0.14.0",
  "xcursor",
 ]
 
@@ -2285,7 +2321,7 @@ dependencies = [
  "web-time",
  "windows-sys 0.52.0",
  "x11-dl",
- "x11rb",
+ "x11rb 0.13.2",
  "xkbcommon-dl",
 ]
 
@@ -2327,7 +2363,18 @@ dependencies = [
  "libloading",
  "once_cell",
  "rustix 1.1.6",
- "x11rb-protocol",
+ "x11rb-protocol 0.13.2",
+]
+
+[[package]]
+name = "x11rb"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a8885a854a8bfdf87a301e53e41b17c5f8f33639903131338b997b1eb614f44"
+dependencies = [
+ "gethostname",
+ "rustix 1.1.6",
+ "x11rb-protocol 0.14.0",
 ]
 
 [[package]]
@@ -2335,6 +2382,12 @@ name = "x11rb-protocol"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
+
+[[package]]
+name = "x11rb-protocol"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "acf4d1bc32aa46eec18caa634ec3cf4c05bfa151f12b93b510b15190f69a1ca8"
 
 [[package]]
 name = "xcursor"
