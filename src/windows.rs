@@ -467,8 +467,16 @@ impl Wayluck {
                 }),
         };
         let keyboard = self.seat.get_keyboard().unwrap();
-        if keyboard.current_focus() != focus {
-            keyboard.set_focus(self, focus, SERIAL_COUNTER.next_serial());
+        if keyboard.current_focus() == focus {
+            return;
+        }
+        let menus = self.x_has_keyboard();
+        keyboard.set_focus(self, focus, SERIAL_COUNTER.next_serial());
+        // X's menus came or went with it: drawn or not,
+        // and the pointer over one that went is over what's below now.
+        if self.x_has_keyboard() != menus {
+            self.queue_redraw();
+            self.repoint();
         }
     }
 

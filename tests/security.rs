@@ -124,3 +124,49 @@ fn x_windows_are_listed_with_their_title_and_class() {
         "not listed: {listed:?}"
     );
 }
+
+/// While a Wayland window has the keyboard, an X program can't put a window
+/// over it (an override-redirect one, which places itself): it isn't drawn,
+/// and the pointer goes through it to the Wayland window.
+#[test]
+fn x_menus_dont_cover_wayland_windows() {
+    let mut session = Session::start();
+    let victim = wayland::Window::open(&session, 0xffcc3333);
+    session.click(10, 10);
+    session.wait_for(
+        || victim.seen().focused.then_some(()),
+        "the victim to have the keyboard",
+    );
+    session.point(300, 300);
+    session.wait_for(
+        || (!victim.seen().pointed).then_some(()),
+        "the pointer off the victim",
+    );
+
+    let _cover = XWindow::open_menu(&session.x_display, "xcover", (0, 0), (200, 200));
+    session.x_menu("xcover", false);
+    session.point(50, 50);
+    session.wait_for(
+        || victim.seen().pointed.then_some(()),
+        "the pointer to reach the victim through the X window",
+    );
+}
+
+/// An X program's menus go when X loses the keyboard: one left open can't
+/// stay over a Wayland window.
+#[test]
+fn x_menus_go_when_x_loses_the_keyboard() {
+    let mut session = Session::start();
+    let victim = wayland::Window::open(&session, 0xffcc3333);
+    let x = XWindow::open(&session.x_display, "xmain", "XApp", (300, 300));
+    session.click_window("xmain");
+    session.wait_for(|| x.focused().then_some(()), "the X window to have focus");
+    let _menu = XWindow::open_menu(&session.x_display, "xmenu", (350, 350), (100, 80));
+    session.x_menu("xmenu", true);
+    session.click(10, 10);
+    session.wait_for(
+        || victim.seen().focused.then_some(()),
+        "the victim to have the keyboard",
+    );
+    session.x_menu("xmenu", false);
+}

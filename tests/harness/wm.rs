@@ -135,6 +135,12 @@ impl Wm {
         )
     }
 
+    /// The titles of the windows it's heard of, so far.
+    pub fn titles(&self) -> Vec<String> {
+        let log = self.log.lock().unwrap();
+        log.windows.iter().map(|w| w.title.clone()).collect()
+    }
+
     /// Transactions wayluck refused, so far.
     pub fn failed(&self) -> usize {
         self.log.lock().unwrap().failed

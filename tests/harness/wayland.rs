@@ -12,8 +12,9 @@ use wayland_client::{
     globals::{GlobalListContents, registry_queue_init},
     protocol::{
         wl_buffer::WlBuffer, wl_callback, wl_callback::WlCallback, wl_compositor::WlCompositor,
-        wl_keyboard, wl_keyboard::WlKeyboard, wl_registry::WlRegistry, wl_seat, wl_seat::WlSeat,
-        wl_shm, wl_shm::WlShm, wl_shm_pool::WlShmPool, wl_surface::WlSurface,
+        wl_keyboard, wl_keyboard::WlKeyboard, wl_pointer, wl_pointer::WlPointer,
+        wl_registry::WlRegistry, wl_seat, wl_seat::WlSeat, wl_shm, wl_shm::WlShm,
+        wl_shm_pool::WlShmPool, wl_surface::WlSurface,
     },
 };
 use wayland_protocols::xdg::shell::client::{
@@ -31,6 +32,8 @@ pub struct Seen {
     pub focused: bool,
     /// Keys pressed while it had the keyboard (evdev codes).
     pub keys: Vec<u32>,
+    /// The pointer is over it now.
+    pub pointed: bool,
 }
 
 pub struct Window {
@@ -198,9 +201,13 @@ impl Dispatch<WlSeat, ()> for Client {
     ) {
         if let wl_seat::Event::Capabilities { capabilities } = event
             && let wayland_client::WEnum::Value(caps) = capabilities
-            && caps.contains(wl_seat::Capability::Keyboard)
         {
-            seat.get_keyboard(qh, ());
+            if caps.contains(wl_seat::Capability::Keyboard) {
+                seat.get_keyboard(qh, ());
+            }
+            if caps.contains(wl_seat::Capability::Pointer) {
+                seat.get_pointer(qh, ());
+            }
         }
     }
 }
@@ -223,6 +230,24 @@ impl Dispatch<WlKeyboard, ()> for Client {
                 state: wayland_client::WEnum::Value(wl_keyboard::KeyState::Pressed),
                 ..
             } => seen.keys.push(key),
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<WlPointer, ()> for Client {
+    fn event(
+        client: &mut Self,
+        _: &WlPointer,
+        event: wl_pointer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let mut seen = client.seen.lock().unwrap();
+        match event {
+            wl_pointer::Event::Enter { .. } => seen.pointed = true,
+            wl_pointer::Event::Leave { .. } => seen.pointed = false,
             _ => {}
         }
     }

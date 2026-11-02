@@ -165,6 +165,38 @@ fn an_x_window_that_starts_fullscreen_asks_with_the_window() {
     });
 }
 
+/// A menu (an override-redirect window) is where its program puts it, in
+/// X's coordinates, which are wayluck's global ones.
+#[test]
+fn an_x_menu_shows_where_its_program_puts_it() {
+    let mut session = Session::start();
+    let x = XWindow::open(&session.x_display, "xmain", "XApp", (300, 300));
+    session.click_window("xmain");
+    session.wait_for(|| x.focused().then_some(()), "the X window to have focus");
+    let _menu = XWindow::open_menu(&session.x_display, "xmenu", (60, 70), (100, 80));
+    assert_eq!(session.x_menu("xmenu", true), (60, 70, 100, 80));
+}
+
+/// Menus are X's own: the window manager isn't told of them, and clients
+/// listing windows don't see them.
+#[test]
+fn x_menus_are_no_windows_of_the_window_manager() {
+    let mut session = Session::start();
+    let wm = Wm::start(&session);
+    let _menu = XWindow::open_menu(&session.x_display, "xmenu", (60, 70), (100, 80));
+    session.x_menu("xmenu", false);
+    // A window opened after it: once the window manager hears of that, it
+    // would have heard of the menu, in order.
+    let _later = XWindow::open(&session.x_display, "xlater", "XApp", (200, 200));
+    wm.window("xlater");
+    assert!(!wm.titles().contains(&"xmenu".into()), "{:?}", wm.titles());
+    let listed = wayland::list_windows(&session);
+    assert!(
+        !listed.iter().any(|(title, _)| title == "xmenu"),
+        "{listed:?}"
+    );
+}
+
 #[test]
 fn the_window_manager_closes_x_windows() {
     let session = Session::start();

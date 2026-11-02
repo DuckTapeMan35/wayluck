@@ -114,14 +114,7 @@ impl Session {
         loop {
             // "title@x,y,wxh" for each, "; " between.
             let windows = self.command("windows");
-            let found = windows.split("; ").find_map(|w| {
-                let (name, at) = w.rsplit_once('@')?;
-                let (x, rest) = at.split_once(',')?;
-                let (y, size) = rest.split_once(',')?;
-                let (width, height) = size.split_once('x')?;
-                let n = |s: &str| s.parse::<i32>().ok();
-                (name == title).then_some((n(x)?, n(y)?, n(width)?, n(height)?))
-            });
+            let found = windows.split("; ").find_map(|w| parse_rect(w, title));
             if let Some(rect) = found.filter(|r| r.2 > 0 && r.3 > 0) {
                 return rect;
             }
@@ -133,6 +126,37 @@ impl Session {
             }
             sleep(Duration::from_millis(20));
         }
+    }
+
+    /// Where the override-redirect window (menu, tooltip) titled so is,
+    /// once wayluck knows it, Xwayland has drawn it, and it's shown (or
+    /// not, as shown says).
+    pub fn x_menu(&mut self, title: &str, shown: bool) -> (i32, i32, i32, i32) {
+        let start = Instant::now();
+        let want = if shown { "shown" } else { "hidden" };
+        loop {
+            // "title@x,y,wxh shown|hidden" for each, "; " between.
+            let menus = self.command("x-menus");
+            let found = menus.split("; ").find_map(|m| {
+                let (rest, how) = m.rsplit_once(' ')?;
+                parse_rect(rest, title).filter(|_| how == want)
+            });
+            if let Some(rect) = found {
+                return rect;
+            }
+            if start.elapsed() > PATIENCE {
+                panic!(
+                    "gave up waiting for {title} {want} (menus: {menus})\nwayluck's log:\n{}",
+                    self.log()
+                );
+            }
+            sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Move the pointer to x, y.
+    pub fn point(&mut self, x: i32, y: i32) {
+        self.command(&format!("move {x} {y}"));
     }
 
     /// Click the middle of the window titled so.
@@ -190,4 +214,14 @@ pub fn wait_for<T>(mut f: impl FnMut() -> Option<T>, what: &str) -> T {
         assert!(start.elapsed() < PATIENCE, "gave up waiting for {what}");
         sleep(Duration::from_millis(20));
     }
+}
+
+/// "title@x,y,wxh" as (x, y, width, height), if it's title's.
+fn parse_rect(s: &str, title: &str) -> Option<(i32, i32, i32, i32)> {
+    let (name, at) = s.rsplit_once('@')?;
+    let (x, rest) = at.split_once(',')?;
+    let (y, size) = rest.split_once(',')?;
+    let (width, height) = size.split_once('x')?;
+    let n = |s: &str| s.parse::<i32>().ok();
+    (name == title).then_some((n(x)?, n(y)?, n(width)?, n(height)?))
 }

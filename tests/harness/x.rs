@@ -137,11 +137,31 @@ impl XWindow {
         Self::open_with(display, title, class, size, |_, _| {})
     }
 
-    /// Mapped (shown, once wayluck places it), on display.
+    /// Mapped once setup has set it up further (more properties, say).
     pub fn open_with(
         display: &str,
         title: &str,
         class: &str,
+        size: (u16, u16),
+        setup: impl FnOnce(&RustConnection, xproto::Window),
+    ) -> XWindow {
+        Self::create(display, title, class, None, size, setup)
+    }
+
+    /// A menu, a tooltip: override-redirect, so no window manager places
+    /// it; it's shown where it says, at (in X's coordinates, the global
+    /// ones), as soon as it's mapped.
+    pub fn open_menu(display: &str, title: &str, at: (i16, i16), size: (u16, u16)) -> XWindow {
+        Self::create(display, title, "XMenu", Some(at), size, |_, _| {})
+    }
+
+    /// A window the window manager places (at None), or an override-redirect
+    /// one at a place of its own.
+    fn create(
+        display: &str,
+        title: &str,
+        class: &str,
+        at: Option<(i16, i16)>,
         size: (u16, u16),
         setup: impl FnOnce(&RustConnection, xproto::Window),
     ) -> XWindow {
@@ -150,13 +170,15 @@ impl XWindow {
         let window = conn.generate_id().unwrap();
         let attributes = xproto::CreateWindowAux::new()
             .background_pixel(0x3366cc)
+            .override_redirect(u32::from(at.is_some()))
             .event_mask(xproto::EventMask::KEY_PRESS | xproto::EventMask::FOCUS_CHANGE);
+        let (x, y) = at.unwrap_or_default();
         conn.create_window(
             0,
             window,
             root,
-            0,
-            0,
+            x,
+            y,
             size.0,
             size.1,
             0,

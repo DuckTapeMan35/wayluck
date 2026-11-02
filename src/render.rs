@@ -95,8 +95,17 @@ where
         elements.extend(layer_elements(from, renderer, scale, above));
     }
 
+    // X's menus and tooltips, where they put themselves
+    // (only while X has the keyboard). The last mapped on top.
+    for menu in state.x_menus_shown().iter().rev() {
+        if let Some(x11) = menu.x11_surface() {
+            let at = x11.last_configure().loc - area.loc;
+            elements.extend(window_elements(renderer, menu, at, scale, 0, None));
+        }
+    }
+
     // The windows of the scene it shows, where they are in it: the scene
-    // is drawn from the output's corner (scenes.rs). Top window first.
+    // is drawn from the output's corner. Top window first.
     let shown: Vec<_> = (state.scenes.shown_on(output))
         .map(|scene| scene.windows().rev().collect())
         .unwrap_or_default();
@@ -296,6 +305,11 @@ pub fn frame_done(state: &mut Wayluck, output: &Output) {
             continue;
         }
         window.send_frame(output, now, Some(Duration::ZERO), |_, _| {
+            Some(output.clone())
+        });
+    }
+    for menu in &state.x_menus {
+        menu.send_frame(output, now, Some(Duration::ZERO), |_, _| {
             Some(output.clone())
         });
     }

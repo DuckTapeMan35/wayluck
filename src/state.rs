@@ -119,6 +119,9 @@ pub struct Wayluck {
     pub xwayland_shell_state: XWaylandShellState,
     /// wayluck as Xwayland's window manager, once Xwayland is ready.
     pub xwm: Option<X11Wm>,
+    /// X's override-redirect windows (menus, tooltips), mapped: shown only
+    /// while an X window has the keyboard.
+    pub x_menus: Vec<Window>,
     /// Xwayland's display (":1"), for programs started in the session.
     pub x_display: Option<OsString>,
     pub dmabuf_state: DmabufState,
@@ -200,6 +203,7 @@ impl Wayluck {
             layer_shell_state,
             xwayland_shell_state,
             xwm: None,
+            x_menus: Vec::new(),
             x_display: None,
             // Its global is made by the backend, which knows the formats.
             dmabuf_state: DmabufState::new(),

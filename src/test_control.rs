@@ -9,6 +9,8 @@
 //! - `key CODE down|up`: an evdev key code (KEY_A is 30).
 //! - `windows`: each window on screen, `title@x,y,widthxheight`, "; "
 //!   between.
+//! - `x-menus`: each X menu or tooltip, `title@x,y,widthxheight shown` (or
+//!   `hidden`), "; " between.
 //!
 //! It's at $XDG_RUNTIME_DIR/wayluck-test.<WAYLAND_DISPLAY>. Builds without
 //! the feature have none of this: the harness checks they refuse it.
@@ -120,6 +122,22 @@ fn run(command: &str, state: &mut Wayluck) -> String {
                 })
                 .collect();
             windows.join("; ")
+        }
+        // X's menus and tooltips with something drawn, and whether they're
+        // shown.
+        ["x-menus"] => {
+            let shown = state.x_menus_shown();
+            let menus: Vec<String> = (state.x_menus.iter())
+                .filter(|m| drawn(m))
+                .filter_map(|m| {
+                    let x11 = m.x11_surface()?;
+                    let rect = x11.last_configure();
+                    let (x, y, width, height) = (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h);
+                    let how = if shown.contains(m) { "shown" } else { "hidden" };
+                    Some(format!("{}@{x},{y},{width}x{height} {how}", x11.title()))
+                })
+                .collect();
+            menus.join("; ")
         }
         ["move", x, y] => match (x.parse(), y.parse()) {
             (Ok(x), Ok(y)) => {

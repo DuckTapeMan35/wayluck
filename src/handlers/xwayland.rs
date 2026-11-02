@@ -1,12 +1,18 @@
 //! X clients: Xwayland, and wayluck as its X window manager (smithay's
 //! X11Wm). An X window it shows is a window like any other:
 //! the window manager places it, and hears what its client asks.
+//!
+//! X's menus and tooltips (override-redirect windows) place themselves,
+//! anywhere: they're no window manager's. They're shown, and take the
+//! pointer, only while an X window has the keyboard, so an X program can't
+//! draw over a Wayland window, or catch clicks meant for it, while that
+//! window is in use.
 
-use crate::Wayluck;
+use crate::{Wayluck, focus::KeyboardFocus};
 use smithay::{
-    desktop::Window,
+    desktop::{Window, WindowSurfaceType},
     reexports::{calloop::LoopHandle, wayland_server::protocol::wl_surface::WlSurface},
-    utils::{Logical, Rectangle},
+    utils::{Logical, Point, Rectangle},
     wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState},
     xwayland::{
         X11Surface, X11Wm, XWayland, XWaylandEvent, XwmHandler,
@@ -53,6 +59,51 @@ impl Wayluck {
             return tracing::warn!("no X clients: {e}");
         }
         self.x_display = Some(format!(":{number}").into());
+    }
+
+    /// Does an X window have the keyboard (not a Wayland window, a bar, or
+    /// nothing)?
+    pub fn x_has_keyboard(&self) -> bool {
+        let focus = self.seat.get_keyboard().and_then(|k| k.current_focus());
+        matches!(focus, Some(KeyboardFocus::X11(..)))
+    }
+
+    /// X's menus and tooltips shown now, bottom first: all of them while an
+    /// X window has the keyboard, none otherwise.
+    pub fn x_menus_shown(&self) -> &[Window] {
+        if self.x_has_keyboard() {
+            &self.x_menus
+        } else {
+            &[]
+        }
+    }
+
+    /// The shown X menu's surface at a point (global), and where that
+    /// surface's origin is.
+    pub fn x_menu_under(
+        &self,
+        at: Point<f64, Logical>,
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        self.x_menus_shown().iter().rev().find_map(|menu| {
+            let x11 = menu.x11_surface()?;
+            let origin = x11.last_configure().loc;
+            let (surface, loc) = x11.surface_under(at, origin, WindowSurfaceType::ALL)?;
+            Some((surface, loc.to_f64()))
+        })
+    }
+
+    /// Is window one of X's menus (mapped)?
+    fn is_x_menu(&self, window: &X11Surface) -> bool {
+        self.x_menus.iter().any(|m| m.x11_surface() == Some(window))
+    }
+
+    /// An X menu went: it's drawn no more.
+    fn forget_x_menu(&mut self, window: &X11Surface) {
+        let before = self.x_menus.len();
+        self.x_menus.retain(|m| m.x11_surface() != Some(window));
+        if self.x_menus.len() != before {
+            self.queue_redraw();
+        }
     }
 }
 
@@ -119,12 +170,23 @@ impl XwmHandler for Wayluck {
         }
     }
 
+    /// A menu or tooltip, mapped: shown where it says (while X has the
+    /// keyboard), above every window, below bars and overlays.
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
-        tracing::debug!("X: override-redirect window {} shown", window.window_id());
+        tracing::debug!(
+            "X: menu {} at {:?}",
+            window.window_id(),
+            window.last_configure()
+        );
+        if !self.is_x_menu(&window) {
+            self.x_menus.push(Window::new_x11_window(window));
+            self.queue_redraw();
+        }
     }
 
     /// Hidden or gone, an X window is closed: shown again, it's new.
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.forget_x_menu(&window);
         if let Some(id) = self.windows.find_x11(&window) {
             tracing::info!("X: window {} ({id}) hidden", window.window_id());
             self.remove_window(id);
@@ -135,6 +197,7 @@ impl XwmHandler for Wayluck {
     }
 
     fn destroyed_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.forget_x_menu(&window);
         if let Some(id) = self.windows.find_x11(&window) {
             tracing::info!("X: window {} ({id}) gone", window.window_id());
             self.remove_window(id);
@@ -206,13 +269,17 @@ impl XwmHandler for Wayluck {
         fullscreen_request(self, &window, false);
     }
 
+    /// A menu moved itself.
     fn configure_notify(
         &mut self,
         _xwm: XwmId,
-        _window: X11Surface,
+        window: X11Surface,
         _geometry: Rectangle<i32, Logical>,
         _above: Option<X11Window>,
     ) {
+        if self.is_x_menu(&window) {
+            self.queue_redraw();
+        }
     }
 
     fn resize_request(
