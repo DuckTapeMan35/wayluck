@@ -21,7 +21,7 @@ use smithay::{
     output::Output,
     render_elements,
     utils::{Logical, Physical, Point, Rectangle, Scale},
-    wayland::shell::wlr_layer::Layer,
+    wayland::{seat::WaylandFocus, shell::wlr_layer::Layer},
 };
 use std::time::Duration;
 
@@ -165,10 +165,10 @@ where
 {
     let corner = window.geometry().loc;
     let drawn_at = (at - corner).to_physical_precise_round(scale);
-    let Some(toplevel) = window.toplevel() else {
-        return window.render_elements(renderer, drawn_at, scale, 1.0);
+    let Some(surface) = window.wl_surface() else {
+        return Vec::new();
     };
-    let surface = toplevel.wl_surface();
+    let surface = &*surface;
     let mut elements = Vec::new();
     // Popups first (they're above), whole.
     for (popup, offset) in PopupManager::popups_for_surface(surface) {
