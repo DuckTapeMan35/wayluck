@@ -11,12 +11,15 @@
 use crate::{
     Wayluck,
     image_capture::Source,
-    protocol::picker::server::{
-        wayluck_pick_v1::{self, WayluckPickV1},
-        wayluck_picker_host_v1::{self, WayluckPickerHostV1},
-        wayluck_picker_manager_v1::{self, WayluckPickerManagerV1},
+    programs,
+    protocol::{
+        picker::server::{
+            wayluck_pick_v1::{self, WayluckPickV1},
+            wayluck_picker_host_v1::{self, WayluckPickerHostV1},
+            wayluck_picker_manager_v1::{self, WayluckPickerManagerV1},
+        },
+        wayluck_wm_scene_v1::WayluckWmSceneV1,
     },
-    protocol::wayluck_wm_scene_v1::WayluckWmSceneV1,
     scenes::{Scene, SceneId},
     state::ClientState,
     windows,
@@ -37,7 +40,7 @@ use smithay::{
 };
 use std::{
     os::{fd::OwnedFd, unix::net::UnixStream},
-    process::{Command, Stdio},
+    process::Stdio,
     sync::Arc,
     time::Duration,
 };
@@ -111,7 +114,7 @@ impl Wayluck {
     /// its stdin. Only it sees the host global (ClientState::picker).
     fn start_picker(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let (ours, theirs) = UnixStream::pair()?;
-        let mut child = Command::new(std::env::current_exe()?)
+        let mut child = programs::command(std::env::current_exe()?)
             .arg("picker")
             .stdin(Stdio::from(OwnedFd::from(theirs)))
             // Its window is an ordinary client's.

@@ -33,13 +33,38 @@ pub struct Session {
 
 impl Session {
     pub fn start() -> Session {
+        Self::start_with(None, None)
+    }
+
+    /// A wayluck started with only so many open files allowed (its soft
+    /// limit; the hard one as it is), as a session's default of 1024 is,
+    /// lower, so tests reach it with fewer windows.
+    pub fn start_with_open_files(limit: u64) -> Session {
+        Self::start_with(Some(limit), None)
+    }
+
+    /// A wayluck started with an open files limit (or as the test was),
+    /// running command (-c) as it would a window manager.
+    pub fn start_with(open_files: Option<u64>, command: Option<&str>) -> Session {
         static COUNT: AtomicU32 = AtomicU32::new(0);
         let n = COUNT.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("wayluck-test-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let log = std::fs::File::create(dir.join("log")).unwrap();
-        let child = Command::new(env!("CARGO_BIN_EXE_wayluck"))
+        let wayluck = env!("CARGO_BIN_EXE_wayluck");
+        let mut wayluck_command = match open_files {
+            Some(limit) => {
+                let mut prlimit = Command::new("prlimit");
+                prlimit.arg(format!("--nofile={limit}:")).arg(wayluck);
+                prlimit
+            }
+            None => Command::new(wayluck),
+        };
+        if let Some(run) = command {
+            wayluck_command.args(["-c", run]);
+        }
+        let child = wayluck_command
             .arg("--headless")
             .env("XDG_RUNTIME_DIR", &dir)
             .env("XDG_CONFIG_HOME", dir.join("config"))

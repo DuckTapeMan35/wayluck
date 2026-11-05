@@ -11,6 +11,7 @@ mod layers;
 mod pick;
 mod picker;
 mod popups;
+mod programs;
 mod protocol;
 mod render;
 mod rounded;
@@ -32,7 +33,7 @@ use smithay::reexports::{
     wayland_server::Display,
 };
 pub use state::Wayluck;
-use std::{ffi::OsStr, path::PathBuf, process::Command, time::Duration};
+use std::{ffi::OsStr, path::PathBuf, time::Duration};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `wayluck pick` and `wayluck picker` aren't the compositor: clients of
@@ -49,6 +50,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(filter) => logs.with_env_filter(filter).init(),
         Err(_) => logs.init(),
     }
+
+    programs::raise_open_files_limit();
 
     let mut event_loop: EventLoop<Wayluck> = EventLoop::try_new()?;
     let display: Display<Wayluck> = Display::new()?;
@@ -83,11 +86,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // or else the init script, if there is one.
     let start = match &args.command {
         Some(command) => {
-            let mut sh = Command::new("sh");
+            let mut sh = programs::command("sh");
             sh.args(["-c", command]);
             Some(sh)
         }
-        None => init_script().map(Command::new),
+        None => init_script().map(programs::command),
     };
     if let Some(mut start) = start {
         tracing::info!("running {:?}", start);
@@ -137,7 +140,7 @@ fn session_env(state: &Wayluck) -> Vec<(&'static str, &OsStr)> {
 /// services at wayluck.
 fn import_environment(state: &Wayluck) {
     let env = session_env(state);
-    let imported = Command::new("dbus-update-activation-environment")
+    let imported = programs::command("dbus-update-activation-environment")
         .arg("--systemd")
         .args(env.iter().map(|(name, _)| name))
         .envs(env.iter().copied())
