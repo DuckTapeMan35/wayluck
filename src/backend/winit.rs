@@ -3,8 +3,9 @@
 
 use crate::{
     Wayluck,
-    image_capture::{self, DmabufTarget},
-    render, screencopy,
+    capture::image_capture::{self, DmabufTarget},
+    capture::screencopy,
+    render,
 };
 use smithay::{
     backend::{

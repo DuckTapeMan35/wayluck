@@ -4,11 +4,12 @@
 
 use crate::{
     Wayluck,
+    capture::image_capture,
     focus::KeyboardFocus,
-    image_capture, layers,
+    layers,
     protocol::wayluck_wm_transaction_v1::WayluckWmTransactionV1,
     render::Border,
-    rounded::Outline,
+    render::rounded::Outline,
     scenes::{self, SceneId},
 };
 use smithay::{

@@ -7,8 +7,9 @@
 
 use crate::{
     Wayluck,
-    image_capture::{self, DmabufTarget},
-    render, screencopy,
+    capture::image_capture::{self, DmabufTarget},
+    capture::screencopy,
+    render,
 };
 use smithay::{
     backend::{
@@ -342,7 +343,6 @@ fn draw_or_wait(state: &mut Wayluck, udev: &Rc<RefCell<Udev>>) {
     };
     // Screenshots and screen sharing waiting for this frame.
     screencopy::capture_virtual(state, &mut renderer);
-    image_capture::capture_frames(state, &mut renderer);
     image_capture::capture_frames(state, &mut renderer);
     let output = output.clone();
     u.in_flight = shown;

@@ -1,11 +1,10 @@
 //! Drawing a frame, whatever the backend: nested (winit) or on hardware (DRM).
 
-use crate::{
-    Wayluck,
-    layers::Side,
-    rounded::{self, AsGles, BorderElement, ClipIds, ClippedSurface, Shaders},
-    scenes::Scene,
-};
+pub mod cursor;
+pub mod rounded;
+
+use crate::{Wayluck, layers::Side, scenes::Scene};
+use rounded::{AsGles, BorderElement, ClipIds, ClippedSurface, Shaders};
 use smithay::{
     backend::renderer::{
         Color32F, ImportAll, ImportMem, Renderer, Texture,

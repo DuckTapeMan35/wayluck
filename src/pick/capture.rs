@@ -7,7 +7,7 @@
 //! once the last was drawn (next), so frames come no faster than the picker
 //! shows them.
 
-use crate::protocol::picker::client::wayluck_picker_host_v1::WayluckPickerHostV1;
+use crate::capture::picker_protocol::client::wayluck_picker_host_v1::WayluckPickerHostV1;
 use smithay::{
     backend::{
         allocator::{

@@ -7,7 +7,7 @@
 //! While captured, its windows are paced by a timer at its
 //! refresh rate (its template's, or its own).
 
-use crate::{Wayluck, image_capture, render};
+use crate::{Wayluck, capture::image_capture, render};
 use smithay::{
     backend::renderer::damage::OutputDamageTracker,
     output::{Mode, Output, PhysicalProperties, Subpixel},

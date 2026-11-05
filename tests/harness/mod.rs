@@ -75,8 +75,12 @@ impl Session {
             .stderr(log)
             .spawn()
             .expect("can't start wayluck (built with --features test-harness?)");
-        let socket = wait_for(|| control_socket(&dir), "wayluck's test control socket");
-        let control = BufReader::new(UnixStream::connect(socket).unwrap());
+        // The socket's file is there a moment before wayluck listens on it.
+        let stream = wait_for(
+            || UnixStream::connect(control_socket(&dir)?).ok(),
+            "wayluck's test control socket",
+        );
+        let control = BufReader::new(stream);
         let mut session = Session {
             child,
             dir,

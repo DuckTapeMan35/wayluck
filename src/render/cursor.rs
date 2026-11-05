@@ -3,6 +3,7 @@
 //! its own image while the pointer is over it (a text beam, say); otherwise
 //! it's the cursor theme's arrow.
 
+use super::Element;
 use smithay::{
     backend::{
         allocator::Fourcc,
@@ -19,8 +20,6 @@ use smithay::{
     utils::{Logical, Point, Scale, Transform},
     wayland::compositor::with_states,
 };
-
-use crate::render::Element;
 
 pub struct Cursor {
     /// wayluck draws it (the hardware backend says so).

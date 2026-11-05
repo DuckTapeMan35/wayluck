@@ -8,7 +8,7 @@ use wayland_client::{
     protocol::wl_registry::WlRegistry,
 };
 
-use crate::protocol::picker::client::{
+use crate::capture::picker_protocol::client::{
     wayluck_pick_v1::{self, WayluckPickV1},
     wayluck_picker_manager_v1::WayluckPickerManagerV1,
 };

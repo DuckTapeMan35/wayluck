@@ -10,7 +10,7 @@
 //! the monitors, and follows the scenes: sync_space maps each window of a
 //! shown scene at its monitor's corner plus where it is in the scene.
 
-use crate::{Wayluck, rounded::Outline, windows::WindowId};
+use crate::{Wayluck, render::rounded::Outline, windows::WindowId};
 use smithay::{
     backend::renderer::gles::element::PixelShaderElement,
     output::Output,

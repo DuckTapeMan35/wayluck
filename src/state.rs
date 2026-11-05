@@ -2,12 +2,12 @@
 
 use crate::{
     atomic::Pending,
-    cursor::Cursor,
+    capture::image_capture::ImageCapture,
+    capture::picker::Picking,
+    capture::screencopy,
     handlers::WaylandSelections,
-    image_capture::ImageCapture,
-    picker::Picking,
+    render::cursor::Cursor,
     scenes::{SceneId, Scenes},
-    screencopy,
     toplevel_list::ToplevelList,
     virtual_output::VirtualOutput,
     windows::Windows,

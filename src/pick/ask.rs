@@ -2,7 +2,7 @@
 //! stdin), the only one that sees wayluck_picker_host_v1: what can be shared,
 //! and where the user's answer goes.
 
-use crate::protocol::picker::client::wayluck_picker_host_v1::{self, WayluckPickerHostV1};
+use crate::capture::picker_protocol::client::wayluck_picker_host_v1::{self, WayluckPickerHostV1};
 use std::os::{fd::AsFd, unix::net::UnixStream};
 use wayland_client::{
     Connection, Dispatch, EventQueue, QueueHandle,

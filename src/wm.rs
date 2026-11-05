@@ -3,7 +3,8 @@
 //! whoever binds while one is bound gets `unavailable`.
 
 use crate::{
-    Wayluck, image_capture,
+    Wayluck,
+    capture::image_capture,
     protocol::{
         wayluck_wm_button_binding_v1::{self, WayluckWmButtonBindingV1},
         wayluck_wm_key_binding_v1::{self, WayluckWmKeyBindingV1},
@@ -14,7 +15,7 @@ use crate::{
         wayluck_wm_window_v1::{self, WayluckWmWindowV1},
     },
     render::argb,
-    rounded::Outline,
+    render::rounded::Outline,
     scenes::SceneId,
     windows::{self, Change, WindowId, Windows},
 };

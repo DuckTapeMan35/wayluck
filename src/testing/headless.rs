@@ -2,7 +2,7 @@
 //! with no window and no GPU needed (a software renderer will do). Nothing
 //! is shown; captures see what's drawn.
 
-use crate::{Wayluck, image_capture, render, screencopy};
+use crate::{Wayluck, capture::image_capture, capture::screencopy, render};
 use smithay::{
     backend::{
         allocator::Fourcc,

@@ -2,21 +2,17 @@
 
 mod atomic;
 mod backend;
-mod cursor;
+mod capture;
 mod focus;
 mod handlers;
-mod image_capture;
 mod input;
 mod layers;
 mod pick;
-mod picker;
 mod popups;
 mod programs;
 mod protocol;
 mod render;
-mod rounded;
 mod scenes;
-mod screencopy;
 mod state;
 #[cfg(feature = "test-harness")]
 mod testing;

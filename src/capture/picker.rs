@@ -10,16 +10,14 @@
 
 use crate::{
     Wayluck,
-    image_capture::Source,
-    programs,
-    protocol::{
-        picker::server::{
-            wayluck_pick_v1::{self, WayluckPickV1},
-            wayluck_picker_host_v1::{self, WayluckPickerHostV1},
-            wayluck_picker_manager_v1::{self, WayluckPickerManagerV1},
-        },
-        wayluck_wm_scene_v1::WayluckWmSceneV1,
+    capture::image_capture::Source,
+    capture::picker_protocol::server::{
+        wayluck_pick_v1::{self, WayluckPickV1},
+        wayluck_picker_host_v1::{self, WayluckPickerHostV1},
+        wayluck_picker_manager_v1::{self, WayluckPickerManagerV1},
     },
+    programs,
+    protocol::wayluck_wm_scene_v1::WayluckWmSceneV1,
     scenes::{Scene, SceneId},
     state::ClientState,
     windows,
