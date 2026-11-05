@@ -7,19 +7,37 @@
 //! pointer, only while an X window has the keyboard, so an X program can't
 //! draw over a Wayland window, or catch clicks meant for it, while that
 //! window is in use.
+//!
+//! The clipboard and the primary selection go between X and Wayland by the
+//! Wayland rule: only while an X window has the keyboard may X programs
+//! paste what's on them, or set them. A program in the background can
+//! neither read what was copied in a Wayland window nor replace it.
 
 use crate::{Wayluck, focus::KeyboardFocus};
 use smithay::{
     desktop::{Window, WindowSurfaceType},
     reexports::{calloop::LoopHandle, wayland_server::protocol::wl_surface::WlSurface},
     utils::{Logical, Point, Rectangle},
-    wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState},
+    wayland::{
+        selection::{
+            SelectionTarget,
+            data_device::{
+                clear_data_device_selection, current_data_device_selection_userdata,
+                request_data_device_client_selection, set_data_device_selection,
+            },
+            primary_selection::{
+                clear_primary_selection, current_primary_selection_userdata,
+                request_primary_client_selection, set_primary_selection,
+            },
+        },
+        xwayland_shell::{XWaylandShellHandler, XWaylandShellState},
+    },
     xwayland::{
         X11Surface, X11Wm, XWayland, XWaylandEvent, XwmHandler,
         xwm::{Reorder, ResizeEdge, WmWindowProperty, X11Window, XwmId},
     },
 };
-use std::{process::Stdio, sync::Mutex};
+use std::{os::fd::OwnedFd, process::Stdio, sync::Mutex};
 
 impl Wayluck {
     /// Start Xwayland (on its own display number), and be its window
@@ -49,6 +67,13 @@ impl Wayluck {
                     Ok(wm) => {
                         tracing::info!("Xwayland ready on :{number}");
                         state.xwm = Some(wm);
+                        // What Wayland clients copied before it was.
+                        for ty in [SelectionTarget::Clipboard, SelectionTarget::Primary] {
+                            let mime_types = state.wayland_selections.of(ty).clone();
+                            if mime_types.is_some() {
+                                state.wayland_selection_set(ty, mime_types);
+                            }
+                        }
                     }
                     Err(e) => tracing::warn!("can't be Xwayland's window manager: {e}"),
                 }
@@ -92,6 +117,18 @@ impl Wayluck {
         })
     }
 
+    /// A Wayland client set a selection (mime types: what it can be pasted
+    /// as), or cleared it (None): X's side follows. Kept for an Xwayland
+    /// that isn't ready yet, which is told when it is.
+    pub fn wayland_selection_set(&mut self, ty: SelectionTarget, mime_types: Option<Vec<String>>) {
+        *self.wayland_selections.of(ty) = mime_types.clone();
+        if let Some(xwm) = self.xwm.as_mut()
+            && let Err(e) = xwm.new_selection(ty, mime_types)
+        {
+            tracing::warn!("X: can't take the {ty:?} selection: {e}");
+        }
+    }
+
     /// Is window one of X's menus (mapped)?
     fn is_x_menu(&self, window: &X11Surface) -> bool {
         self.x_menus.iter().any(|m| m.x11_surface() == Some(window))
@@ -127,7 +164,7 @@ impl XWaylandShellHandler for Wayluck {
             window.window_id(),
             window.title()
         );
-        // Clients listing windows hear of it (toplevel_list.rs).
+        // Clients listing windows hear of it.
         self.list_window(id);
         // The window manager too, with everything its client set up first
         // (names, parent, size limits; fullscreen, if it asked already).
@@ -137,6 +174,23 @@ impl XWaylandShellHandler for Wayluck {
         let asked = (window.user_data().get::<AskedFullscreen>()).map(|a| *a.0.lock().unwrap());
         if let Some(on) = asked.or(window.is_fullscreen().then_some(true)) {
             self.wm_fullscreen_request(id, on);
+        }
+    }
+}
+
+/// What Wayland clients last copied, as what it can be pasted as (None:
+/// nothing, or it's X's): for an Xwayland that starts after.
+#[derive(Default)]
+pub struct WaylandSelections {
+    clipboard: Option<Vec<String>>,
+    primary: Option<Vec<String>>,
+}
+
+impl WaylandSelections {
+    fn of(&mut self, ty: SelectionTarget) -> &mut Option<Vec<String>> {
+        match ty {
+            SelectionTarget::Clipboard => &mut self.clipboard,
+            SelectionTarget::Primary => &mut self.primary,
         }
     }
 }
@@ -292,6 +346,74 @@ impl XwmHandler for Wayluck {
     }
 
     fn move_request(&mut self, _xwm: XwmId, _window: X11Surface, _button: u32) {}
+
+    /// An X program asks to paste what a Wayland client copied: only while
+    /// an X window has the keyboard.
+    fn allow_selection_access(&mut self, _xwm: XwmId, selection: SelectionTarget) -> bool {
+        let allowed = self.x_has_keyboard();
+        if !allowed {
+            tracing::info!(
+                "X: refused to paste the {selection:?} selection (no X window has the keyboard)"
+            );
+        }
+        allowed
+    }
+
+    /// It may: the Wayland client that copied it writes it to fd.
+    fn send_selection(
+        &mut self,
+        _xwm: XwmId,
+        selection: SelectionTarget,
+        mime_type: String,
+        fd: OwnedFd,
+    ) {
+        let sent = match selection {
+            SelectionTarget::Clipboard => {
+                request_data_device_client_selection(&self.seat, mime_type, fd).is_ok()
+            }
+            SelectionTarget::Primary => {
+                request_primary_client_selection(&self.seat, mime_type, fd).is_ok()
+            }
+        };
+        if !sent {
+            tracing::debug!("X: nothing to paste from the {selection:?} selection");
+        }
+    }
+
+    /// An X program copied: what's on Wayland's side becomes that, only
+    /// while an X window has the keyboard.
+    fn new_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_types: Vec<String>) {
+        if !self.x_has_keyboard() {
+            return tracing::info!(
+                "X: refused to set the {selection:?} selection (no X window has the keyboard)"
+            );
+        }
+        // Wayland's side is X's now: no Wayland client's to tell X of.
+        *self.wayland_selections.of(selection) = None;
+        let dh = &self.display_handle;
+        match selection {
+            SelectionTarget::Clipboard => set_data_device_selection(dh, &self.seat, mime_types, ()),
+            SelectionTarget::Primary => set_primary_selection(dh, &self.seat, mime_types, ()),
+        }
+    }
+
+    /// What an X program copied is gone (the program went, or gave it up):
+    /// so is Wayland's side of it, if that's still X's.
+    fn cleared_selection(&mut self, _xwm: XwmId, selection: SelectionTarget) {
+        let dh = &self.display_handle;
+        match selection {
+            SelectionTarget::Clipboard => {
+                if current_data_device_selection_userdata(&self.seat).is_some() {
+                    clear_data_device_selection(dh, &self.seat);
+                }
+            }
+            SelectionTarget::Primary => {
+                if current_primary_selection_userdata(&self.seat).is_some() {
+                    clear_primary_selection(dh, &self.seat);
+                }
+            }
+        }
+    }
 }
 
 /// An X client asked for its window to be fullscreen (on), or not: the

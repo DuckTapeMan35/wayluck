@@ -1,6 +1,6 @@
-//! What the rest of wayluck asks about layer surfaces (bars, wallpapers;
-//! handlers/layer_shell.rs keeps them): the room they leave windows, and
-//! under the pointer, and when one has the keyboard instead of the focused window
+//! What the rest of wayluck asks about layer surfaces (bars, wallpapers):
+//! the room they leave windows, and under the pointer,
+//! and when one has the keyboard instead of the focused window
 
 use crate::Wayluck;
 use smithay::{

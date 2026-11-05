@@ -88,7 +88,7 @@ where
     }
 
     // Bars and overlays above windows; then the windows; then what's below.
-    // A virtual output's are its template's (virtual_output.rs).
+    // A virtual output's are its template's.
     let layers_from = state.layers_from(output);
     let above = state.layers(output, Side::Above);
     if let Some(from) = &layers_from {
@@ -329,7 +329,7 @@ pub struct Border {
     width: i32,
     /// Top, right, bottom, left: 0xAARRGGBB.
     colors: [u32; 4],
-    /// Drawn by the border shader (rounded.rs): kept from frame to frame,
+    /// Drawn by the border shader: kept from frame to frame,
     /// so the damage tracker knows when it really changed. Made when it's
     /// first drawn.
     shader: Option<PixelShaderElement>,

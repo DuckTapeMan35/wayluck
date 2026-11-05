@@ -3,7 +3,7 @@
 //! on another TTY); libinput reads the keyboards and mice; the first
 //! connected monitor shows what's drawn, a frame per vblank at most.
 //!
-//! Ctrl+Alt+F1…F12 switch TTYs, and Ctrl+Alt+Backspace exits (input.rs).
+//! Ctrl+Alt+F1…F12 switch TTYs, and Ctrl+Alt+Backspace exits.
 
 use crate::{
     Wayluck,
@@ -180,7 +180,7 @@ pub fn init(
         },
     )?;
 
-    // Ctrl+Alt+F-keys (input.rs) ask the session for another TTY.
+    // Ctrl+Alt+F-keys ask the session for another TTY.
     let vt = session.clone();
     state.change_vt = Some(Box::new(move |n| {
         if let Err(e) = vt.clone().change_vt(n) {

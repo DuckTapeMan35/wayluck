@@ -207,8 +207,7 @@ fn region_of(
 }
 
 /// Is buffer the one a frame of size asked for: XRGB8888, that size, and in
-/// shared memory, rows of 4 bytes a pixel (or a dmabuf: image_capture.rs
-/// offers them)?
+/// shared memory, rows of 4 bytes a pixel (or a dmabuf offers them)?
 pub fn fits(buffer: &WlBuffer, size: Size<i32, Physical>) -> bool {
     if let Ok(dmabuf) = get_dmabuf(buffer) {
         let s = dmabuf.size();
@@ -300,7 +299,7 @@ where
 }
 
 /// After a frame was drawn (on any output): copies of virtual outputs. A
-/// virtual output is drawn for nothing else (virtual_output.rs); for
+/// virtual output is drawn for nothing else; for
 /// copy_with_damage, only once something in it changed since its last.
 pub fn capture_virtual<R>(state: &mut Wayluck, renderer: &mut R)
 where
@@ -367,7 +366,7 @@ impl Copy {
 impl Wayluck {
     /// A frame of output was asked for: if nothing was capturing it, the
     /// window manager hears it is now, and a virtual output's windows are
-    /// paced (virtual_output.rs). Captures are watched for stopping.
+    /// paced. Captures are watched for stopping.
     pub fn capture_activity(&mut self, output: &Output) {
         let now = Instant::now();
         if let Some((_, last)) = self.captures.iter_mut().find(|(o, _)| o == output) {

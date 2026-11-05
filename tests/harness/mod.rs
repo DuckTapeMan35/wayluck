@@ -154,6 +154,19 @@ impl Session {
         }
     }
 
+    /// Wait until what's on the clipboard is what an X program copied.
+    pub fn clipboard_from_x(&mut self) {
+        let start = Instant::now();
+        while self.command("clipboard") != "x" {
+            assert!(
+                start.elapsed() < PATIENCE,
+                "gave up waiting for the clipboard to be X's\nwayluck's log:\n{}",
+                self.log()
+            );
+            sleep(Duration::from_millis(20));
+        }
+    }
+
     /// Move the pointer to x, y.
     pub fn point(&mut self, x: i32, y: i32) {
         self.command(&format!("move {x} {y}"));

@@ -25,7 +25,7 @@ use smithay::{
         output::OutputHandler,
         pointer_constraints::PointerConstraintsHandler,
         selection::{
-            SelectionHandler,
+            SelectionHandler, SelectionSource, SelectionTarget,
             data_device::{
                 DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler, set_data_device_focus,
             },
@@ -33,7 +33,9 @@ use smithay::{
         },
     },
 };
+use std::os::fd::OwnedFd;
 pub use xdg_shell::handle_commit;
+pub use xwayland::WaylandSelections;
 
 // wl_seat: the keyboard and pointer clients get input from. Empty for now;
 // xdg-shell needs one to exist (popup grabs and moves name a seat).
@@ -56,8 +58,7 @@ impl SeatHandler for Wayluck {
     }
 
     /// The clipboard and the primary selection follow keyboard focus: only
-    /// the focused client may read them (or set them). Clipboard tools don't
-    /// need it (clipboard.rs).
+    /// the focused client may read them (or set them). Clipboard tools don't need it.
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&KeyboardFocus>) {
         let dh = &self.display_handle;
         let client = focused.and_then(|f| dh.get_client(f.surface().id()).ok());
@@ -69,7 +70,37 @@ impl SeatHandler for Wayluck {
 // wl_data_device_manager: the clipboard, and drag and drop. smithay does the
 // work; wayluck only says who has focus.
 impl SelectionHandler for Wayluck {
+    /// A selection set from X; Wayland clients' carry their own data.
     type SelectionUserData = ();
+
+    /// A Wayland client set the clipboard (or primary selection), or
+    /// cleared it: X's side follows, for X programs to paste once one has
+    /// the keyboard.
+    fn new_selection(
+        &mut self,
+        ty: SelectionTarget,
+        source: Option<SelectionSource>,
+        _seat: Seat<Self>,
+    ) {
+        self.wayland_selection_set(ty, source.map(|s| s.mime_types()));
+    }
+
+    /// A Wayland client pastes what an X program copied: X's side hands
+    /// it over.
+    fn send_selection(
+        &mut self,
+        ty: SelectionTarget,
+        mime_type: String,
+        fd: OwnedFd,
+        _seat: Seat<Self>,
+        _user_data: &(),
+    ) {
+        if let Some(xwm) = self.xwm.as_mut()
+            && let Err(e) = xwm.send_selection(ty, mime_type, fd)
+        {
+            tracing::warn!("X: can't hand over the {ty:?} selection: {e}");
+        }
+    }
 }
 
 impl DataDeviceHandler for Wayluck {

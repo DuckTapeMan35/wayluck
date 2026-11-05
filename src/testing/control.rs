@@ -11,6 +11,8 @@
 //!   between.
 //! - `x-menus`: each X menu or tooltip, `title@x,y,widthxheight shown` (or
 //!   `hidden`), "; " between.
+//! - `clipboard`: `x` if what's on the clipboard is an X program's (copied
+//!   while X had the keyboard), `-` otherwise.
 //!
 //! It's at $XDG_RUNTIME_DIR/wayluck-test.<WAYLAND_DISPLAY>. Builds without
 //! the feature have none of this: the harness checks they refuse it.
@@ -24,7 +26,7 @@ use smithay::{
     desktop::Window,
     input::keyboard::Keycode,
     reexports::calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic},
-    wayland::seat::WaylandFocus,
+    wayland::{seat::WaylandFocus, selection::data_device::current_data_device_selection_userdata},
 };
 use std::{
     io::{Read, Write},
@@ -138,6 +140,10 @@ fn run(command: &str, state: &mut Wayluck) -> String {
                 })
                 .collect();
             menus.join("; ")
+        }
+        ["clipboard"] => {
+            let x = current_data_device_selection_userdata(&state.seat).is_some();
+            if x { "x" } else { "-" }.into()
         }
         ["move", x, y] => match (x.parse(), y.parse()) {
             (Ok(x), Ok(y)) => {

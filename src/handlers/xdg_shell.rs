@@ -1,4 +1,4 @@
-//! xdg-shell: clients' windows (toplevels), their popups (popups.rs). wayluck keeps them;
+//! xdg-shell: clients' windows (toplevels), their popups. wayluck keeps them;
 //! it doesn't show them anywhere until something places them.
 
 use crate::{
@@ -66,7 +66,7 @@ impl XdgShellHandler for Wayluck {
         fullscreen_request(self, &surface, false);
     }
 
-    // Popups (menus, tooltips): popups.rs.
+    // Popups (menus, tooltips).
     fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
         Wayluck::new_popup(self, surface, positioner);
     }
@@ -113,7 +113,7 @@ pub fn handle_commit(state: &mut Wayluck, surface: &WlSurface) {
     if toplevel.is_initial_configure_sent() {
         return;
     }
-    // Its first commit: clients listing windows hear of it (toplevel_list.rs).
+    // Its first commit: clients listing windows hear of it.
     state.list_window(id);
     // A window manager decides where it goes first, so the first configure
     // has its size (Wayluck::apply sends it then).

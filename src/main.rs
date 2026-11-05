@@ -1,11 +1,10 @@
 //! wayluck: a Wayland compositor that doesn't decide where windows go.
 
 mod atomic;
+mod backend;
 mod cursor;
 mod focus;
 mod handlers;
-#[cfg(feature = "test-harness")]
-mod headless;
 mod image_capture;
 mod input;
 mod layers;
@@ -19,12 +18,10 @@ mod scenes;
 mod screencopy;
 mod state;
 #[cfg(feature = "test-harness")]
-mod test_control;
+mod testing;
 mod toplevel_list;
-mod udev;
 mod virtual_output;
 mod windows;
-mod winit;
 mod wm;
 
 use smithay::reexports::{
@@ -60,19 +57,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args = Args::parse()?;
     if args.drm {
-        udev::init(&mut event_loop, &mut state)?;
+        backend::udev::init(&mut event_loop, &mut state)?;
     } else if args.headless() {
         #[cfg(feature = "test-harness")]
         {
-            headless::init(&mut event_loop, &mut state)?;
-            test_control::init(&mut event_loop, &state)?;
+            testing::headless::init(&mut event_loop, &mut state)?;
+            testing::control::init(&mut event_loop, &state)?;
         }
     } else {
-        winit::init(&mut event_loop, &mut state)?;
+        backend::winit::init(&mut event_loop, &mut state)?;
     }
-    // Until a window manager comes: wayluck's own scene (scenes.rs).
+    // Until a window manager comes: wayluck's own scene.
     state.show_own_scene();
-    // X clients (handlers/xwayland.rs): before anything is started, so
+    // X clients: before anything is started, so
     // it's told the display.
     state.start_xwayland(&event_loop.handle());
 

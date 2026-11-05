@@ -791,7 +791,7 @@ fn send_output_state(resource: &WayluckWmOutputV1, output: &Output, space: &Spac
     resource.name(output.name());
     if let Some(geo) = space.output_geometry(output) {
         resource.geometry(geo.loc.x, geo.loc.y, geo.size.w, geo.size.h);
-        // What bars leave windows (layers.rs), in global coordinates.
+        // What bars leave windows, in global coordinates.
         let mut usable = layer_map_for_output(output).non_exclusive_zone();
         usable.loc += geo.loc;
         resource.usable(usable.loc.x, usable.loc.y, usable.size.w, usable.size.h);

@@ -128,7 +128,32 @@ pub struct XWindow {
     stop: Arc<AtomicBool>,
     keys: Arc<Mutex<Vec<u32>>>,
     focused: Arc<AtomicBool>,
+    /// Its side of the clipboard (copy, paste).
+    clip: Arc<Mutex<Clip>>,
+    atoms: Atoms,
     thread: Option<JoinHandle<()>>,
+}
+
+/// The atoms copying and pasting take.
+#[derive(Clone, Copy)]
+struct Atoms {
+    clipboard: xproto::Atom,
+    utf8: xproto::Atom,
+    targets: xproto::Atom,
+    /// Where a paste is put, on the window, to be read.
+    pasted: xproto::Atom,
+}
+
+/// What an X window has copied, and what a paste got.
+#[derive(Default)]
+struct Clip {
+    /// What it hands out as the CLIPBOARD's owner.
+    copied: Option<String>,
+    /// The answer to its last paste: None, until there is one; then the
+    /// text, or None if it was refused.
+    pasted: Option<Option<String>>,
+    /// How many times it's been asked for what it copied.
+    asked: usize,
 }
 
 impl XWindow {
@@ -208,11 +233,6 @@ impl XWindow {
             .unwrap();
         // WM_CLASS: instance, then class, each ending in a nul.
         let wm_class = format!("{}\0{class}\0", class.to_lowercase());
-        setup(&conn, window);
-        conn.map_window(window).unwrap();
-        conn.get_input_focus().unwrap().reply().unwrap(); // all done, once answered
-        let conn = Arc::new(conn);
-        let polled = conn.clone();
         conn.change_property8(
             replace,
             window,
@@ -221,13 +241,24 @@ impl XWindow {
             wm_class.as_bytes(),
         )
         .unwrap();
+        let atoms = Atoms {
+            clipboard: atom("CLIPBOARD"),
+            utf8,
+            targets: atom("TARGETS"),
+            pasted: atom("WAYLUCK_TEST_PASTED"),
+        };
+        setup(&conn, window);
         conn.map_window(window).unwrap();
         conn.get_input_focus().unwrap().reply().unwrap(); // all done, once answered
 
+        let conn = Arc::new(conn);
+        let polled = conn.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let keys = Arc::new(Mutex::new(Vec::new()));
         let focused = Arc::new(AtomicBool::new(false));
+        let clip = Arc::new(Mutex::new(Clip::default()));
         let (stopping, record, has_focus) = (stop.clone(), keys.clone(), focused.clone());
+        let clipped = clip.clone();
         let thread = std::thread::spawn(move || {
             while !stopping.load(Ordering::Relaxed) {
                 while let Ok(Some(event)) = polled.poll_for_event() {
@@ -235,6 +266,15 @@ impl XWindow {
                         Event::KeyPress(e) => record.lock().unwrap().push(u32::from(e.detail)),
                         Event::FocusIn(_) => has_focus.store(true, Ordering::Relaxed),
                         Event::FocusOut(_) => has_focus.store(false, Ordering::Relaxed),
+                        Event::SelectionRequest(e) => {
+                            let copied = clipped.lock().unwrap().copied.clone();
+                            hand_out(&polled, atoms, &e, copied.as_deref());
+                            clipped.lock().unwrap().asked += 1;
+                        }
+                        Event::SelectionNotify(e) => {
+                            let got = received(&polled, window, &e);
+                            clipped.lock().unwrap().pasted = Some(got);
+                        }
                         _ => {}
                     }
                 }
@@ -248,8 +288,55 @@ impl XWindow {
             stop,
             keys,
             focused,
+            clip,
+            atoms,
             thread: Some(thread),
         }
+    }
+
+    /// Copy text, as X programs do: own the CLIPBOARD selection, and hand
+    /// the text to whoever asks.
+    pub fn copy(&self, text: &str) {
+        self.clip.lock().unwrap().copied = Some(text.into());
+        let (window, clipboard) = (self.window, self.atoms.clipboard);
+        (self.conn)
+            .set_selection_owner(window, clipboard, x11rb::CURRENT_TIME)
+            .unwrap();
+        self.conn.get_input_focus().unwrap().reply().unwrap(); // done, once answered
+    }
+
+    /// Paste, as X programs do: ask the CLIPBOARD's owner for its text.
+    /// None: refused (or nothing to paste).
+    pub fn paste(&self) -> Option<String> {
+        self.clip.lock().unwrap().pasted = None;
+        let a = self.atoms;
+        (self.conn)
+            .convert_selection(
+                self.window,
+                a.clipboard,
+                a.utf8,
+                a.pasted,
+                x11rb::CURRENT_TIME,
+            )
+            .unwrap();
+        self.conn.flush().unwrap();
+        super::wait_for(
+            || self.clip.lock().unwrap().pasted.take(),
+            "an answer to the paste",
+        )
+    }
+
+    /// How many times it's been asked for what it copied (wayluck asks,
+    /// to learn what it can be pasted as).
+    pub fn asked(&self) -> usize {
+        self.clip.lock().unwrap().asked
+    }
+
+    /// Does anyone own the CLIPBOARD (a program that copied, or wayluck
+    /// for the Wayland clipboard)?
+    pub fn clipboard_owned(&self) -> bool {
+        let owner = self.conn.get_selection_owner(self.atoms.clipboard).unwrap();
+        owner.reply().unwrap().owner != x11rb::NONE
     }
 
     /// Has it X's input focus? Its keys come by X, the click that gave it
@@ -300,6 +387,19 @@ impl XWindow {
             .is_some_and(|mut atoms| atoms.any(|a| a == fullscreen))
     }
 
+    /// The window the window manager says is active (_NET_ACTIVE_WINDOW on
+    /// the root window; 0: none).
+    pub fn active_window(&self) -> xproto::Window {
+        let active = self.atom("_NET_ACTIVE_WINDOW");
+        let reply = self
+            .conn
+            .get_property(false, self.root, active, xproto::AtomEnum::WINDOW, 0, 1)
+            .unwrap()
+            .reply()
+            .unwrap();
+        reply.value32().and_then(|mut w| w.next()).unwrap_or(0)
+    }
+
     /// Its size, as X has it now.
     pub fn size(&self) -> (u16, u16) {
         let geometry = self
@@ -333,4 +433,60 @@ impl Drop for XWindow {
             let _ = thread.join();
         }
     }
+}
+
+/// Answer a request for what an X window copied: its text, if it has any
+/// and it's asked for as UTF8_STRING (or what it can give: TARGETS).
+fn hand_out(
+    conn: &RustConnection,
+    atoms: Atoms,
+    request: &xproto::SelectionRequestEvent,
+    copied: Option<&str>,
+) {
+    let replace = xproto::PropMode::REPLACE;
+    let (requestor, property) = (request.requestor, request.property);
+    let answered = match copied {
+        Some(text) if request.target == atoms.utf8 => conn
+            .change_property8(replace, requestor, property, atoms.utf8, text.as_bytes())
+            .is_ok(),
+        Some(_) if request.target == atoms.targets => {
+            let targets = [atoms.targets, atoms.utf8];
+            (conn.change_property32(
+                replace,
+                requestor,
+                property,
+                xproto::AtomEnum::ATOM,
+                &targets,
+            ))
+            .is_ok()
+        }
+        _ => false,
+    };
+    let notify = xproto::SelectionNotifyEvent {
+        response_type: xproto::SELECTION_NOTIFY_EVENT,
+        sequence: 0,
+        time: request.time,
+        requestor,
+        selection: request.selection,
+        target: request.target,
+        property: if answered { property } else { x11rb::NONE },
+    };
+    let _ = conn.send_event(false, requestor, xproto::EventMask::NO_EVENT, notify);
+    let _ = conn.flush();
+}
+
+/// What a paste got: the text the owner put on window, or None if it
+/// refused.
+fn received(
+    conn: &RustConnection,
+    window: xproto::Window,
+    notify: &xproto::SelectionNotifyEvent,
+) -> Option<String> {
+    if notify.property == x11rb::NONE {
+        return None;
+    }
+    let any = xproto::AtomEnum::ANY;
+    let reply = (conn.get_property(true, window, notify.property, any, 0, u32::MAX / 4)).ok()?;
+    let reply = reply.reply().ok()?;
+    Some(String::from_utf8_lossy(&reply.value).into_owned())
 }

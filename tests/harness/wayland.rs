@@ -1,20 +1,39 @@
 //! A Wayland client for tests: one window, filled with a colour, that
-//! records what it's told (focus, keys). It runs on a thread of its own.
+//! records what it's told (focus, keys), and copies and pastes. It runs on
+//! a thread of its own.
 
 use super::{Session, wait_for};
 use std::{
-    io::Write,
+    io::{Read, Write},
     os::{fd::AsFd, unix::net::UnixStream},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use wayland_client::{
     Connection, Dispatch, QueueHandle,
     globals::{GlobalListContents, registry_queue_init},
     protocol::{
-        wl_buffer::WlBuffer, wl_callback, wl_callback::WlCallback, wl_compositor::WlCompositor,
-        wl_keyboard, wl_keyboard::WlKeyboard, wl_pointer, wl_pointer::WlPointer,
-        wl_registry::WlRegistry, wl_seat, wl_seat::WlSeat, wl_shm, wl_shm::WlShm,
-        wl_shm_pool::WlShmPool, wl_surface::WlSurface,
+        wl_buffer::WlBuffer,
+        wl_callback,
+        wl_callback::WlCallback,
+        wl_compositor::WlCompositor,
+        wl_data_device::{self, WlDataDevice},
+        wl_data_device_manager::WlDataDeviceManager,
+        wl_data_offer::{self, WlDataOffer},
+        wl_data_source::{self, WlDataSource},
+        wl_keyboard,
+        wl_keyboard::WlKeyboard,
+        wl_pointer,
+        wl_pointer::WlPointer,
+        wl_registry::WlRegistry,
+        wl_seat,
+        wl_seat::WlSeat,
+        wl_shm,
+        wl_shm::WlShm,
+        wl_shm_pool::WlShmPool,
+        wl_surface::WlSurface,
     },
 };
 use wayland_protocols::xdg::shell::client::{
@@ -30,15 +49,39 @@ pub struct Seen {
     pub mapped: bool,
     /// It has the keyboard now.
     pub focused: bool,
-    /// Keys pressed while it had the keyboard (evdev codes).
-    pub keys: Vec<u32>,
     /// The pointer is over it now.
     pub pointed: bool,
+    /// Keys pressed while it had the keyboard (evdev codes).
+    pub keys: Vec<u32>,
 }
 
 pub struct Window {
     seen: Arc<Mutex<Seen>>,
+    conn: Connection,
+    qh: QueueHandle<Client>,
+    clip: Arc<Mutex<Clip>>,
+    manager: WlDataDeviceManager,
+    device: WlDataDevice,
 }
+
+/// The window's side of the clipboard.
+#[derive(Default)]
+struct Clip {
+    /// The serial of its last keyboard enter: setting the clipboard takes
+    /// one (it's the keyboard focus's to set).
+    serial: u32,
+    /// What it copied, handed to whoever pastes it.
+    copied: Option<String>,
+    /// Offers made to it, and their mime types, until they're the
+    /// clipboard (or not).
+    offers: Vec<(WlDataOffer, Vec<String>)>,
+    /// What's on the clipboard, as offered to it (while it has the
+    /// keyboard).
+    selection: Option<(WlDataOffer, Vec<String>)>,
+}
+
+/// The mime type text is copied and pasted as.
+const TEXT: &str = "text/plain;charset=utf-8";
 
 impl Window {
     /// A window of session's, filled with argb (0xAARRGGBB), mapped.
@@ -50,7 +93,9 @@ impl Window {
         let compositor: WlCompositor = globals.bind(&qh, 4..=6, ()).unwrap();
         let shm: WlShm = globals.bind(&qh, 1..=1, ()).unwrap();
         let wm_base: XdgWmBase = globals.bind(&qh, 1..=6, ()).unwrap();
-        let _seat: WlSeat = globals.bind(&qh, 5..=9, ()).unwrap();
+        let seat: WlSeat = globals.bind(&qh, 5..=9, ()).unwrap();
+        let manager: WlDataDeviceManager = globals.bind(&qh, 3..=3, ()).unwrap();
+        let device = manager.get_data_device(&seat, &qh, ());
         let surface = compositor.create_surface(&qh, ());
         let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
         let toplevel = xdg.get_toplevel(&qh, ());
@@ -58,8 +103,10 @@ impl Window {
         surface.commit();
 
         let seen = Arc::new(Mutex::new(Seen::default()));
+        let clip = Arc::new(Mutex::new(Clip::default()));
         let mut client = Client {
             seen: seen.clone(),
+            clip: clip.clone(),
             shm,
             surface,
             argb,
@@ -69,7 +116,14 @@ impl Window {
             // Until wayluck goes, at the end of the test.
             while queue.blocking_dispatch(&mut client).is_ok() {}
         });
-        let window = Window { seen };
+        let window = Window {
+            seen,
+            conn,
+            qh,
+            clip,
+            manager,
+            device,
+        };
         wait_for(
             || window.seen().mapped.then_some(()),
             "the window to be mapped",
@@ -81,10 +135,60 @@ impl Window {
     pub fn seen(&self) -> Seen {
         self.seen.lock().unwrap().clone()
     }
+
+    /// Copy text (it needs the keyboard for that), and wait until wayluck
+    /// has handled it.
+    pub fn copy(&self, text: &str) {
+        let mut clip = self.clip.lock().unwrap();
+        clip.copied = Some(text.into());
+        let source = self.manager.create_data_source(&self.qh, ());
+        source.offer(TEXT.into());
+        self.device.set_selection(Some(&source), clip.serial);
+        drop(clip);
+        self.sync();
+    }
+
+    /// Paste what's on the clipboard, as offered to it now (once wayluck
+    /// has told it all there is). None: nothing is offered.
+    pub fn paste(&self) -> Option<String> {
+        self.sync();
+        let (offer, mimes) = self.clip.lock().unwrap().selection.clone()?;
+        if !mimes.iter().any(|m| m == TEXT) {
+            return None;
+        }
+        let (mut reader, writer) = std::io::pipe().unwrap();
+        offer.receive(TEXT.into(), writer.as_fd());
+        drop(writer);
+        self.conn.flush().unwrap();
+        // Read on a thread of its own: the other end may never write.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            let _ = reader.read_to_string(&mut text);
+            let _ = tx.send(text);
+        });
+        Some(
+            rx.recv_timeout(super::PATIENCE)
+                .expect("the paste never came"),
+        )
+    }
+
+    /// Wait until wayluck has handled everything sent so far, and the
+    /// window everything wayluck sent before answering.
+    fn sync(&self) {
+        let done = Arc::new(AtomicBool::new(false));
+        self.conn.display().sync(&self.qh, done.clone());
+        self.conn.flush().unwrap();
+        wait_for(
+            || done.load(Ordering::Relaxed).then_some(()),
+            "wayluck to answer",
+        );
+    }
 }
 
 struct Client {
     seen: Arc<Mutex<Seen>>,
+    clip: Arc<Mutex<Clip>>,
     shm: WlShm,
     surface: WlSurface,
     argb: u32,
@@ -137,6 +241,8 @@ impl Dispatch<XdgSurface, ()> for Client {
         if let xdg_surface::Event::Configure { serial } = event {
             xdg.ack_configure(serial);
             client.draw(qh);
+            // Mapped once wayluck has handled the commit (and put the
+            // window where a click finds it): it answers this after.
             conn.display().sync(qh, ());
         }
     }
@@ -223,7 +329,10 @@ impl Dispatch<WlKeyboard, ()> for Client {
     ) {
         let mut seen = client.seen.lock().unwrap();
         match event {
-            wl_keyboard::Event::Enter { .. } => seen.focused = true,
+            wl_keyboard::Event::Enter { serial, .. } => {
+                seen.focused = true;
+                client.clip.lock().unwrap().serial = serial;
+            }
             wl_keyboard::Event::Leave { .. } => seen.focused = false,
             wl_keyboard::Event::Key {
                 key,
@@ -253,6 +362,92 @@ impl Dispatch<WlPointer, ()> for Client {
     }
 }
 
+/// A sync's answer: done.
+impl Dispatch<WlCallback, Arc<AtomicBool>> for Client {
+    fn event(
+        _: &mut Self,
+        _: &WlCallback,
+        event: wl_callback::Event,
+        done: &Arc<AtomicBool>,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_callback::Event::Done { .. } = event {
+            done.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Offers of what's on the clipboard, and which is on it now.
+impl Dispatch<WlDataDevice, ()> for Client {
+    fn event(
+        client: &mut Self,
+        _: &WlDataDevice,
+        event: wl_data_device::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let mut clip = client.clip.lock().unwrap();
+        match event {
+            wl_data_device::Event::DataOffer { id } => clip.offers.push((id, Vec::new())),
+            wl_data_device::Event::Selection { id } => {
+                clip.selection = id.and_then(|id| {
+                    let i = clip.offers.iter().position(|(o, _)| *o == id)?;
+                    Some(clip.offers.swap_remove(i))
+                });
+            }
+            _ => {}
+        }
+    }
+
+    wayland_client::event_created_child!(Client, WlDataDevice, [
+        wl_data_device::EVT_DATA_OFFER_OPCODE => (WlDataOffer, ()),
+    ]);
+}
+
+/// An offer's mime types.
+impl Dispatch<WlDataOffer, ()> for Client {
+    fn event(
+        client: &mut Self,
+        offer: &WlDataOffer,
+        event: wl_data_offer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_data_offer::Event::Offer { mime_type } = event {
+            let mut clip = client.clip.lock().unwrap();
+            if let Some((_, mimes)) = clip.offers.iter_mut().find(|(o, _)| o == offer) {
+                mimes.push(mime_type);
+            }
+        }
+    }
+}
+
+/// Someone pastes what it copied: they get it.
+impl Dispatch<WlDataSource, ()> for Client {
+    fn event(
+        client: &mut Self,
+        _: &WlDataSource,
+        event: wl_data_source::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_data_source::Event::Send { fd, .. } = event {
+            let copied = client
+                .clip
+                .lock()
+                .unwrap()
+                .copied
+                .clone()
+                .unwrap_or_default();
+            let _ = std::fs::File::from(fd).write_all(copied.as_bytes());
+        }
+    }
+}
+
 /// Objects whose events don't matter here.
 macro_rules! ignore {
     ($($t:ty),*) => {$(
@@ -262,7 +457,14 @@ macro_rules! ignore {
         }
     )*};
 }
-ignore!(WlCompositor, WlShm, WlShmPool, WlBuffer, WlSurface);
+ignore!(
+    WlCompositor,
+    WlShm,
+    WlShmPool,
+    WlBuffer,
+    WlSurface,
+    WlDataDeviceManager
+);
 
 impl Dispatch<WlRegistry, GlobalListContents> for Client {
     fn event(

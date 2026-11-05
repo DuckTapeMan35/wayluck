@@ -69,7 +69,7 @@ pub struct Windows {
 
 impl Windows {
     /// Keep window under a new id, and tag its surface with it (an X
-    /// window has one by then: surface_associated, handlers/xwayland.rs).
+    /// window has one by then: surface_associated).
     pub fn insert(&mut self, window: Window) -> WindowId {
         self.next += 1;
         let id = WindowId(self.next);
@@ -210,17 +210,17 @@ pub enum Change {
     Fullscreen(WindowId, bool),
     /// A scene's outlines are those added after this (none, if none are).
     Outlines(SceneId),
-    /// Draw an outline on a scene (rounded.rs).
+    /// Draw an outline on a scene.
     Outline(SceneId, Outline),
 }
 
 impl Wayluck {
     /// A client's new window: kept, not shown until a window manager places
-    /// it (which hears of it at its first commit, handlers/xdg_shell.rs).
+    /// it (which hears of it at its first commit).
     /// With no window manager, shown a step down and right of the last one.
     pub fn add_window(&mut self, window: Window) -> WindowId {
         let id = self.windows.insert(window.clone());
-        // Its redraws may be held back for a transaction (atomic.rs).
+        // Its redraws may be held back for a transaction.
         if let Some(toplevel) = window.toplevel() {
             add_pre_commit_hook::<Self, _>(toplevel.wl_surface(), |state, _, surface| {
                 state.hold_back(surface)
@@ -236,7 +236,7 @@ impl Wayluck {
 
     /// Apply changes together: if any can't be, none are. Clients are told
     /// at once (sizes, states); what's shown changes when the windows it
-    /// resizes have redrawn for it (atomic.rs). tx hears applied then.
+    /// resizes have redrawn for it. tx hears applied then.
     pub fn apply(
         &mut self,
         changes: Vec<Change>,

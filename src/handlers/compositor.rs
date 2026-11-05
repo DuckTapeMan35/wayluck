@@ -45,12 +45,11 @@ impl CompositorHandler for Wayluck {
     }
 
     fn new_surface(&mut self, surface: &WlSurface) {
-        // Before smithay's own hooks, which come with a role: see
-        // layer_shell.rs.
+        // Before smithay's own hooks, which come with a role
         add_pre_commit_hook::<Self, _>(surface, |_, _, surface| {
             super::layer_shell::dead_layer_commit(surface);
         });
-        // A new GPU buffer waits until it's drawn (syncobj.rs).
+        // A new GPU buffer waits until it's drawn.
         add_pre_commit_hook::<Self, _>(surface, |state, _, surface| {
             super::syncobj::wait_until_drawn(state, surface);
         });

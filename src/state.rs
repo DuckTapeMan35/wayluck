@@ -3,6 +3,7 @@
 use crate::{
     atomic::Pending,
     cursor::Cursor,
+    handlers::WaylandSelections,
     image_capture::ImageCapture,
     picker::Picking,
     scenes::{SceneId, Scenes},
@@ -61,7 +62,7 @@ pub struct Wayluck {
     pub loop_signal: LoopSignal,
     /// Asks the backend for a frame (queue_redraw); None until it's set up.
     pub redraw: Option<Ping>,
-    /// For timers and idle callbacks (atomic.rs).
+    /// For timers and idle callbacks.
     pub loop_handle: LoopHandle<'static, Wayluck>,
     /// When wayluck started: frame callbacks carry the time since.
     pub start_time: std::time::Instant,
@@ -98,7 +99,7 @@ pub struct Wayluck {
     pub scenes: Scenes,
     /// wayluck's own scene, shown when there's no window manager.
     pub own_scene: SceneId,
-    /// Outputs with no screen behind them (virtual_output.rs).
+    /// Outputs with no screen behind them.
     pub virtuals: Vec<VirtualOutput>,
     /// Virtual outputs made so far: the next is named after it.
     pub virtual_count: u32,
@@ -122,6 +123,8 @@ pub struct Wayluck {
     /// X's override-redirect windows (menus, tooltips), mapped: shown only
     /// while an X window has the keyboard.
     pub x_menus: Vec<Window>,
+    /// What Wayland clients copied, for Xwayland.
+    pub wayland_selections: WaylandSelections,
     /// Xwayland's display (":1"), for programs started in the session.
     pub x_display: Option<OsString>,
     pub dmabuf_state: DmabufState,
@@ -144,16 +147,16 @@ impl Wayluck {
         let socket_name = listen(display, event_loop);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
-        // Middle-click paste, and clipboard tools (handlers/clipboard.rs).
+        // Middle-click paste, and clipboard tools.
         let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
         let primary = Some(&primary_selection_state);
         let wlr_data_control_state =
             wlr_data_control::DataControlState::new::<Self, _>(&dh, primary, |_| true);
         let ext_data_control_state =
             ext_data_control::DataControlState::new::<Self, _>(&dh, primary, |_| true);
-        // Clients leave decorations to the compositor (handlers/decoration.rs).
+        // Clients leave decorations to the compositor.
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
-        // Bars, wallpapers, notifications (handlers/layer_shell.rs).
+        // Bars, wallpapers, notifications.
         let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
         let mut seat_state = SeatState::new();
@@ -204,6 +207,7 @@ impl Wayluck {
             xwayland_shell_state,
             xwm: None,
             x_menus: Vec::new(),
+            wayland_selections: WaylandSelections::default(),
             x_display: None,
             // Its global is made by the backend, which knows the formats.
             dmabuf_state: DmabufState::new(),

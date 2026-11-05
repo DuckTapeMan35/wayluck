@@ -129,7 +129,7 @@ enum Memory {
 impl Captures {
     /// Start capturing these sources, a thumbnail for each (host makes
     /// them), its frames no bigger than fit. The queue is to be dispatched
-    /// with the captures as its connection has events (window.rs).
+    /// with the captures as its connection has events.
     pub fn start(
         connection: Connection,
         host: &WayluckPickerHostV1,

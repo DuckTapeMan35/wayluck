@@ -170,3 +170,56 @@ fn x_menus_go_when_x_loses_the_keyboard() {
     );
     session.x_menu("xmenu", false);
 }
+
+/// What's copied in a Wayland window is the keyboard focus's to paste: an
+/// X program in the background can't read it (as no Wayland client could).
+#[test]
+fn x_clients_cant_read_the_clipboard_without_the_keyboard() {
+    let mut session = Session::start();
+    let victim = wayland::Window::open(&session, 0xffcc3333);
+    session.click(10, 10);
+    session.wait_for(
+        || victim.seen().focused.then_some(()),
+        "the victim to have the keyboard",
+    );
+    victim.copy("secret");
+    let spy = XWindow::open(&session.x_display, "xspy", "XSpy", (100, 100));
+    // wayluck has put the Wayland clipboard on X's side: there is one to ask.
+    session.wait_for(
+        || spy.clipboard_owned().then_some(()),
+        "the clipboard on X's side",
+    );
+    assert_eq!(
+        spy.paste(),
+        None,
+        "an X program in the background read the clipboard"
+    );
+}
+
+/// Nor can it replace what's on the clipboard: what the Wayland window
+/// pastes is still what it copied.
+#[test]
+fn x_clients_cant_set_the_clipboard_without_the_keyboard() {
+    let mut session = Session::start();
+    let victim = wayland::Window::open(&session, 0xffcc3333);
+    session.click(10, 10);
+    session.wait_for(
+        || victim.seen().focused.then_some(()),
+        "the victim to have the keyboard",
+    );
+    victim.copy("mine");
+    let spy = XWindow::open(&session.x_display, "xspy", "XSpy", (100, 100));
+    // The victim's copy on X's side first, so the spy's comes after it.
+    session.wait_for(
+        || spy.clipboard_owned().then_some(()),
+        "the clipboard on X's side",
+    );
+    spy.copy("planted");
+    // wayluck asks the spy what it can be pasted as before it decides; a
+    // window mapped after that, once wayluck has it, comes after its
+    // decision.
+    session.wait_for(|| (spy.asked() > 0).then_some(()), "wayluck to ask the spy");
+    let _later = XWindow::open(&session.x_display, "xlater", "XApp", (100, 100));
+    session.window("xlater");
+    assert_eq!(victim.paste().as_deref(), Some("mine"));
+}

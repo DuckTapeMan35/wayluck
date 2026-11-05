@@ -17,7 +17,7 @@ use self::__interfaces::*;
 wayland_scanner::generate_server_code!("protocol/wayluck-wm-unstable-v1.xml");
 
 /// protocol/wayluck-picker-unstable-v1.xml: how `wayluck pick` asks for the
-/// user's choice of what to share (picker.rs).
+/// user's choice of what to share.
 pub mod picker {
     // It makes ext-image-copy-capture sessions, from ext-image-capture-source
     // sources: the code made from it uses theirs.

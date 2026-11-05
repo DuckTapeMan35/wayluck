@@ -74,6 +74,31 @@ fn an_x_window_the_window_manager_focuses_gets_the_keyboard() {
     );
 }
 
+/// Wine (Proton) takes its window to be in the background unless the root
+/// window's _NET_ACTIVE_WINDOW names it; a fullscreen game then minimizes
+/// itself. X clients learn nothing of Wayland windows: none is active then.
+#[test]
+fn the_focused_x_window_is_the_active_one() {
+    let mut session = Session::start();
+    let wayland = wayland::Window::open(&session, 0xffcc3333);
+    let x = XWindow::open(&session.x_display, "xwin", "XWin", (300, 300));
+    session.click_window("xwin");
+    session.wait_for(|| x.focused().then_some(()), "the X window to have focus");
+    session.wait_for(
+        || (x.active_window() == x.id()).then_some(()),
+        "_NET_ACTIVE_WINDOW to name the X window",
+    );
+    session.click(10, 10);
+    session.wait_for(
+        || wayland.seen().focused.then_some(()),
+        "the Wayland window to have the keyboard",
+    );
+    session.wait_for(
+        || (x.active_window() == 0).then_some(()),
+        "_NET_ACTIVE_WINDOW to name no window",
+    );
+}
+
 #[test]
 fn an_x_dialog_has_its_window_as_parent() {
     let session = Session::start();
@@ -194,6 +219,49 @@ fn x_menus_are_no_windows_of_the_window_manager() {
     assert!(
         !listed.iter().any(|(title, _)| title == "xmenu"),
         "{listed:?}"
+    );
+}
+
+/// Text copied in a Wayland window pastes into an X window.
+#[test]
+fn wayland_copies_paste_into_x() {
+    let mut session = Session::start();
+    let wayland = wayland::Window::open(&session, 0xffcc3333);
+    session.click(10, 10);
+    session.wait_for(
+        || wayland.seen().focused.then_some(()),
+        "the Wayland window to have the keyboard",
+    );
+    wayland.copy("from wayland");
+    let x = XWindow::open(&session.x_display, "xmain", "XApp", (300, 300));
+    session.click_window("xmain");
+    session.wait_for(|| x.focused().then_some(()), "the X window to have focus");
+    session.wait_for(
+        || (x.paste().as_deref() == Some("from wayland")).then_some(()),
+        "the X window to paste what was copied in the Wayland one",
+    );
+}
+
+/// Text copied in an X window pastes into a Wayland window.
+#[test]
+fn x_copies_paste_into_wayland() {
+    let mut session = Session::start();
+    let wayland = wayland::Window::open(&session, 0xffcc3333);
+    let x = XWindow::open(&session.x_display, "xmain", "XApp", (300, 300));
+    session.click_window("xmain");
+    session.wait_for(|| x.focused().then_some(()), "the X window to have focus");
+    x.copy("from x");
+    // wayluck takes a moment (it asks the X program what it copied can be
+    // pasted as): a person doesn't click away that fast.
+    session.clipboard_from_x();
+    session.click(10, 10);
+    session.wait_for(
+        || wayland.seen().focused.then_some(()),
+        "the Wayland window to have the keyboard",
+    );
+    session.wait_for(
+        || (wayland.paste().as_deref() == Some("from x")).then_some(()),
+        "the Wayland window to paste what was copied in the X one",
     );
 }
 
