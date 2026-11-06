@@ -1,39 +1,20 @@
 //! smithay's per-protocol handlers.
 
-mod clipboard;
-mod compositor;
 mod decoration;
-mod dmabuf;
-mod layer_shell;
-mod syncobj;
 mod xdg_shell;
 mod xwayland;
 
 use crate::{Wayluck, focus::KeyboardFocus};
-pub use compositor::compositor_state_of;
-pub use layer_shell::layer_committed;
 use smithay::{
     delegate_dispatch2,
-    input::{
-        Seat, SeatHandler, SeatState,
-        dnd::{DnDGrab, DndGrabHandler, GrabType, Source},
-        pointer::{CursorImageStatus, Focus},
-    },
+    input::{Seat, SeatHandler, SeatState, pointer::CursorImageStatus},
     reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
-    utils::Serial,
     wayland::{
         output::OutputHandler,
         pointer_constraints::PointerConstraintsHandler,
-        selection::{
-            SelectionHandler, SelectionSource, SelectionTarget,
-            data_device::{
-                DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler, set_data_device_focus,
-            },
-            primary_selection::set_primary_focus,
-        },
+        selection::{data_device::set_data_device_focus, primary_selection::set_primary_focus},
     },
 };
-use std::os::fd::OwnedFd;
 pub use xdg_shell::handle_commit;
 pub use xwayland::WaylandSelections;
 
@@ -66,72 +47,6 @@ impl SeatHandler for Wayluck {
         set_primary_focus(dh, seat, client);
     }
 }
-
-// wl_data_device_manager: the clipboard, and drag and drop. smithay does the
-// work; wayluck only says who has focus.
-impl SelectionHandler for Wayluck {
-    /// A selection set from X; Wayland clients' carry their own data.
-    type SelectionUserData = ();
-
-    /// A Wayland client set the clipboard (or primary selection), or
-    /// cleared it: X's side follows, for X programs to paste once one has
-    /// the keyboard.
-    fn new_selection(
-        &mut self,
-        ty: SelectionTarget,
-        source: Option<SelectionSource>,
-        _seat: Seat<Self>,
-    ) {
-        self.wayland_selection_set(ty, source.map(|s| s.mime_types()));
-    }
-
-    /// A Wayland client pastes what an X program copied: X's side hands
-    /// it over.
-    fn send_selection(
-        &mut self,
-        ty: SelectionTarget,
-        mime_type: String,
-        fd: OwnedFd,
-        _seat: Seat<Self>,
-        _user_data: &(),
-    ) {
-        if let Some(xwm) = self.xwm.as_mut()
-            && let Err(e) = xwm.send_selection(ty, mime_type, fd)
-        {
-            tracing::warn!("X: can't hand over the {ty:?} selection: {e}");
-        }
-    }
-}
-
-impl DataDeviceHandler for Wayluck {
-    fn data_device_state(&mut self) -> &mut DataDeviceState {
-        &mut self.data_device_state
-    }
-}
-
-/// A client started dragging something with the pointer: smithay carries it
-/// to wherever it's dropped (drawing no icon for it yet). Without a pointer
-/// grab to go with it (touch: wayluck has none), it's cancelled.
-impl WaylandDndGrabHandler for Wayluck {
-    fn dnd_requested<S: Source>(
-        &mut self,
-        source: S,
-        _icon: Option<WlSurface>,
-        seat: Seat<Self>,
-        serial: Serial,
-        type_: GrabType,
-    ) {
-        let pointer = seat.get_pointer();
-        let start = pointer.as_ref().and_then(|p| p.grab_start_data());
-        let (GrabType::Pointer, Some(pointer), Some(start)) = (type_, pointer, start) else {
-            return source.cancel();
-        };
-        let grab = DnDGrab::new_pointer(&self.display_handle, start, source, seat);
-        pointer.set_grab(self, grab, serial, Focus::Keep);
-    }
-}
-
-impl DndGrabHandler for Wayluck {}
 
 // Pointer lock and confinement (games, 3D views): not offered yet, but
 // smithay's pointer needs the handler.

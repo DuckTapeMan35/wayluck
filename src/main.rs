@@ -3,6 +3,7 @@
 mod atomic;
 mod backend;
 mod capture;
+mod clipboard;
 mod focus;
 mod handlers;
 mod input;
@@ -14,6 +15,7 @@ mod protocol;
 mod render;
 mod scenes;
 mod state;
+mod surfaces;
 #[cfg(feature = "test-harness")]
 mod testing;
 mod toplevel_list;

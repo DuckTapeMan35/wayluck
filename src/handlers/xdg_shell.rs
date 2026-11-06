@@ -2,7 +2,7 @@
 //! it doesn't show them anywhere until something places them.
 
 use crate::{
-    Wayluck,
+    Wayluck, layers,
     windows::{self, Windows},
 };
 use smithay::{
@@ -94,7 +94,7 @@ impl XdgShellHandler for Wayluck {
 /// configure (it can't draw anything before that), once the window manager,
 /// if there is one, has placed it.
 pub fn handle_commit(state: &mut Wayluck, surface: &WlSurface) {
-    if state.popup_committed(surface) || super::layer_committed(state, surface) {
+    if state.popup_committed(surface) || layers::shell::layer_committed(state, surface) {
         return;
     }
     let Some(id) = Windows::id_of(surface) else {

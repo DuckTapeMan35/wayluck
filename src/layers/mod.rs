@@ -2,6 +2,8 @@
 //! the room they leave windows, and under the pointer,
 //! and when one has the keyboard instead of the focused window
 
+pub mod shell;
+
 use crate::Wayluck;
 use smithay::{
     backend::renderer::utils::with_renderer_surface_state,

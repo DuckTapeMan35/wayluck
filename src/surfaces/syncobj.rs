@@ -35,7 +35,7 @@ impl DrmSyncobjHandler for Wayluck {
 /// Before a commit (a pre-commit hook): one with a new GPU buffer waits
 /// until the buffer is drawn (its acquire point, or else its dmabuf). Only
 /// this surface's commits wait; everything else goes on.
-pub fn wait_until_drawn(state: &mut Wayluck, surface: &WlSurface) {
+pub(super) fn wait_until_drawn(state: &mut Wayluck, surface: &WlSurface) {
     let (acquire, dmabuf) = with_states(surface, |s| {
         let acquire = (s.cached_state.get::<DrmSyncobjCachedState>().pending())
             .acquire_point

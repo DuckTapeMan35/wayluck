@@ -6,8 +6,8 @@
 
 use crate::{
     Wayluck,
-    handlers::compositor_state_of,
     protocol::wayluck_wm_transaction_v1::WayluckWmTransactionV1,
+    surfaces::compositor_state_of,
     windows::{Change, WindowId, Windows},
 };
 use smithay::{

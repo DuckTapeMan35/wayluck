@@ -1,18 +1,15 @@
-//! wl_compositor (surfaces) and wl_shm (buffers in shared memory).
+//! wl_compositor: every client surface's commits, before whatever role it
+//! has (window, bar, popup) gets them.
+
+mod buffers;
+mod syncobj;
 
 use crate::{Wayluck, state::ClientState};
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
-    reexports::wayland_server::{
-        Client,
-        protocol::{wl_buffer, wl_surface::WlSurface},
-    },
-    wayland::{
-        buffer::BufferHandler,
-        compositor::{
-            CompositorClientState, CompositorHandler, CompositorState, add_pre_commit_hook,
-        },
-        shm::{ShmHandler, ShmState},
+    reexports::wayland_server::{Client, protocol::wl_surface::WlSurface},
+    wayland::compositor::{
+        CompositorClientState, CompositorHandler, CompositorState, add_pre_commit_hook,
     },
     xwayland::XWaylandClientData,
 };
@@ -38,7 +35,7 @@ impl CompositorHandler for Wayluck {
     fn commit(&mut self, surface: &WlSurface) {
         // Keep the surface's buffer for rendering.
         on_commit_buffer_handler::<Self>(surface);
-        super::handle_commit(self, surface);
+        crate::handlers::handle_commit(self, surface);
         // A new buffer, or a change to what's drawn: a frame shows it. (The
         // damage tracker draws only what really changed.)
         self.queue_redraw();
@@ -47,21 +44,11 @@ impl CompositorHandler for Wayluck {
     fn new_surface(&mut self, surface: &WlSurface) {
         // Before smithay's own hooks, which come with a role
         add_pre_commit_hook::<Self, _>(surface, |_, _, surface| {
-            super::layer_shell::dead_layer_commit(surface);
+            crate::layers::shell::dead_layer_commit(surface);
         });
         // A new GPU buffer waits until it's drawn.
         add_pre_commit_hook::<Self, _>(surface, |state, _, surface| {
-            super::syncobj::wait_until_drawn(state, surface);
+            syncobj::wait_until_drawn(state, surface);
         });
-    }
-}
-
-impl BufferHandler for Wayluck {
-    fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {}
-}
-
-impl ShmHandler for Wayluck {
-    fn shm_state(&self) -> &ShmState {
-        &self.shm_state
     }
 }
