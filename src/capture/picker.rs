@@ -16,7 +16,7 @@ use crate::{
         wayluck_picker_host_v1::{self, WayluckPickerHostV1},
         wayluck_picker_manager_v1::{self, WayluckPickerManagerV1},
     },
-    programs,
+    session,
     state::ClientState,
     windows,
     wm::protocol::wayluck_wm_scene_v1::WayluckWmSceneV1,
@@ -112,7 +112,7 @@ impl Wayluck {
     /// its stdin. Only it sees the host global (ClientState::picker).
     fn start_picker(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let (ours, theirs) = UnixStream::pair()?;
-        let mut child = programs::command(std::env::current_exe()?)
+        let mut child = session::command(std::env::current_exe()?)
             .arg("picker")
             .stdin(Stdio::from(OwnedFd::from(theirs)))
             // Its window is an ordinary client's.
