@@ -5,14 +5,17 @@ use crate::{
     capture::picker::Picking,
     capture::screencopy,
     render::cursor::Cursor,
-    scenes::{SceneId, Scenes},
-    virtual_output::VirtualOutput,
     windows::{Pending, ToplevelList, Windows},
-    wm::WmState,
+    wm::{
+        WmState,
+        scenes::{SceneId, Scenes},
+        virtual_output::VirtualOutput,
+    },
     xwayland::WaylandSelections,
 };
 use smithay::{
     backend::allocator::dmabuf::Dmabuf,
+    delegate_dispatch2,
     desktop::{LayerSurface, PopupManager, Space, Window},
     input::{Seat, SeatState, keyboard::Keycode},
     output::Output,
@@ -134,6 +137,9 @@ pub struct Wayluck {
     pub seat_state: SeatState<Wayluck>,
     pub seat: Seat<Wayluck>,
 }
+
+// Every smithay protocol's requests go to its state.
+delegate_dispatch2!(Wayluck);
 
 impl Wayluck {
     pub fn new(event_loop: &mut EventLoop<'static, Self>, display: Display<Self>) -> Self {

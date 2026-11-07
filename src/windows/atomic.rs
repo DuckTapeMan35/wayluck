@@ -6,9 +6,9 @@
 
 use crate::{
     Wayluck,
-    protocol::wayluck_wm_transaction_v1::WayluckWmTransactionV1,
     surfaces::compositor_state_of,
     windows::{Change, WindowId, Windows},
+    wm::protocol::wayluck_wm_transaction_v1::WayluckWmTransactionV1,
 };
 use smithay::{
     reexports::{

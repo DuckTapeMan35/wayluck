@@ -14,7 +14,7 @@ pub use atomic::Pending;
 pub use list::ToplevelList;
 pub use xdg_shell::handle_commit;
 
-use crate::{Wayluck, capture::image_capture, render::Border, scenes};
+use crate::{Wayluck, capture::image_capture, render::Border, wm::scenes};
 use smithay::{
     desktop::Window,
     reexports::wayland_server::protocol::wl_surface::WlSurface,

@@ -3,19 +3,15 @@
 mod backend;
 mod capture;
 mod clipboard;
-mod handlers;
 mod input;
 mod layers;
 mod pick;
 mod programs;
-mod protocol;
 mod render;
-mod scenes;
 mod state;
 mod surfaces;
 #[cfg(feature = "test-harness")]
 mod testing;
-mod virtual_output;
 mod windows;
 mod wm;
 mod xwayland;

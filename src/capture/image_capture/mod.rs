@@ -23,7 +23,7 @@ mod sources;
 
 pub use frames::capture_frames;
 
-use crate::{Wayluck, scenes::SceneId, windows::WindowId};
+use crate::{Wayluck, windows::WindowId, wm::scenes::SceneId};
 use smithay::{
     backend::{
         allocator::{Fourcc, Modifier, format::FormatSet},

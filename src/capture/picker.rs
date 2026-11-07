@@ -17,10 +17,10 @@ use crate::{
         wayluck_picker_manager_v1::{self, WayluckPickerManagerV1},
     },
     programs,
-    protocol::wayluck_wm_scene_v1::WayluckWmSceneV1,
-    scenes::{Scene, SceneId},
     state::ClientState,
     windows,
+    wm::protocol::wayluck_wm_scene_v1::WayluckWmSceneV1,
+    wm::scenes::{Scene, SceneId},
 };
 use smithay::{
     output::Output,

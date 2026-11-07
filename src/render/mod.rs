@@ -3,7 +3,7 @@
 pub mod cursor;
 pub mod rounded;
 
-use crate::{Wayluck, layers::Side, scenes::Scene};
+use crate::{Wayluck, layers::Side, wm::scenes::Scene};
 use rounded::{AsGles, BorderElement, ClipIds, ClippedSurface, Shaders};
 use smithay::{
     backend::renderer::{

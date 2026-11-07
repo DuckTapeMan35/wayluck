@@ -10,10 +10,12 @@
 //! the monitors, and follows the scenes: sync_space maps each window of a
 //! shown scene at its monitor's corner plus where it is in the scene.
 
-use crate::{Wayluck, render::rounded::Outline, windows::WindowId};
+use super::protocol::wayluck_wm_scene_v1::{self, WayluckWmSceneV1};
+use crate::{Wayluck, capture::image_capture, render::rounded::Outline, windows::WindowId};
 use smithay::{
     backend::renderer::gles::element::PixelShaderElement,
     output::Output,
+    reexports::wayland_server::{Client, DataInit, Dispatch, DisplayHandle, backend::ClientId},
     utils::{Logical, Point, Rectangle, Size},
 };
 use std::collections::{HashMap, HashSet};
@@ -244,4 +246,29 @@ impl Wayluck {
 pub fn cascade(n: usize) -> Point<i32, Logical> {
     let step = 40 * n as i32;
     (step, step).into()
+}
+
+// A scene: windows laid out together. Everything about it is
+// done in transactions; it only goes.
+impl Dispatch<WayluckWmSceneV1, SceneId> for Wayluck {
+    fn request(
+        _state: &mut Self,
+        _client: &Client,
+        _scene: &WayluckWmSceneV1,
+        _request: wayluck_wm_scene_v1::Request,
+        _id: &SceneId,
+        _dh: &DisplayHandle,
+        _data_init: &mut DataInit<'_, Self>,
+    ) {
+    }
+
+    /// Its windows are in no scene any more, and outputs showing it show
+    /// nothing. The space follows once the loop is idle: if its window
+    /// manager is going away altogether, the windows first move to
+    /// wayluck's own scene where they are (manager destroyed).
+    fn destroyed(state: &mut Self, _client: ClientId, _scene: &WayluckWmSceneV1, id: &SceneId) {
+        state.scenes.remove(*id);
+        state.stop_capture_sessions(&image_capture::Source::Scene(*id));
+        state.loop_handle.insert_idle(|state| state.sync_space());
+    }
 }

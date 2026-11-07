@@ -4,9 +4,9 @@
 use super::WindowId;
 use crate::{
     Wayluck,
-    protocol::wayluck_wm_transaction_v1::WayluckWmTransactionV1,
     render::{Border, rounded::Outline},
-    scenes::SceneId,
+    wm::protocol::wayluck_wm_transaction_v1::WayluckWmTransactionV1,
+    wm::scenes::SceneId,
 };
 use smithay::{
     output::Output,
