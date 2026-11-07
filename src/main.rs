@@ -22,6 +22,7 @@ mod toplevel_list;
 mod virtual_output;
 mod windows;
 mod wm;
+mod xwayland;
 
 use smithay::reexports::{
     calloop::{

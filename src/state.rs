@@ -5,13 +5,13 @@ use crate::{
     capture::image_capture::ImageCapture,
     capture::picker::Picking,
     capture::screencopy,
-    handlers::WaylandSelections,
     render::cursor::Cursor,
     scenes::{SceneId, Scenes},
     toplevel_list::ToplevelList,
     virtual_output::VirtualOutput,
     windows::Windows,
     wm::WmState,
+    xwayland::WaylandSelections,
 };
 use smithay::{
     backend::allocator::dmabuf::Dmabuf,

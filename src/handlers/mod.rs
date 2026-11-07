@@ -2,7 +2,6 @@
 
 mod decoration;
 mod xdg_shell;
-mod xwayland;
 
 use crate::{Wayluck, focus::KeyboardFocus};
 use smithay::{
@@ -16,7 +15,6 @@ use smithay::{
     },
 };
 pub use xdg_shell::handle_commit;
-pub use xwayland::WaylandSelections;
 
 // wl_seat: the keyboard and pointer clients get input from. Empty for now;
 // xdg-shell needs one to exist (popup grabs and moves name a seat).
