@@ -4,7 +4,6 @@ mod atomic;
 mod backend;
 mod capture;
 mod clipboard;
-mod focus;
 mod handlers;
 mod input;
 mod layers;

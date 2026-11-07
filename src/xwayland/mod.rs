@@ -10,7 +10,7 @@ mod windows;
 
 pub use selection::WaylandSelections;
 
-use crate::{Wayluck, focus::KeyboardFocus};
+use crate::{Wayluck, input::KeyboardFocus};
 use smithay::{
     reexports::{calloop::LoopHandle, wayland_server::protocol::wl_surface::WlSurface},
     utils::{Logical, Rectangle},

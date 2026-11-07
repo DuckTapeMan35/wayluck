@@ -4,7 +4,7 @@
 //! takes X input focus away again, so no X window has it while a Wayland
 //! one has the keyboard.
 
-use crate::Wayluck;
+use crate::{Wayluck, layers, windows::WindowId};
 use smithay::{
     backend::input::{InputTime, KeyState},
     desktop::PopupKind,
@@ -13,7 +13,7 @@ use smithay::{
         keyboard::{KeyboardTarget, KeysymHandle, ModifiersState},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{IsAlive, Serial},
+    utils::{IsAlive, SERIAL_COUNTER, Serial},
     wayland::seat::WaylandFocus,
     xwayland::X11Surface,
 };
@@ -136,6 +136,57 @@ impl KeyboardTarget<Wayluck> for KeyboardFocus {
             KeyboardFocus::X11(x, _) => {
                 KeyboardTarget::modifiers(&**x, seat, data, modifiers, serial)
             }
+        }
+    }
+}
+
+impl Wayluck {
+    /// Give id keyboard focus (None: no window has it). Where it stacks is
+    /// up to whoever places it.
+    pub fn focus(&mut self, id: Option<WindowId>) {
+        let window = id.and_then(|id| self.windows.get(id)).cloned();
+        // Activated (drawn as focused) for the focused one only.
+        for w in self.space.elements() {
+            w.set_activated(Some(w) == window.as_ref());
+            if let Some(t) = w.toplevel() {
+                t.send_pending_configure();
+            }
+        }
+        self.windows.focused = window.and(id);
+        // Focus moved on purpose: a bar or launcher that took the keyboard
+        // when clicked lets go (one that asks for it exclusively doesn't).
+        if self
+            .layer_focus
+            .as_ref()
+            .is_some_and(|l| !layers::exclusive(l))
+        {
+            self.layer_focus = None;
+        }
+        self.give_keyboard();
+    }
+
+    /// The keyboard to whoever should have it: a layer surface holding it, else the focused window.
+    pub fn give_keyboard(&mut self) {
+        let focus = match &self.layer_focus {
+            Some(layer) => Some(KeyboardFocus::from(layer.wl_surface().clone())),
+            None => (self.windows.focused)
+                .and_then(|id| self.windows.get(id))
+                .and_then(|w| match w.x11_surface() {
+                    Some(x11) => KeyboardFocus::x11(x11),
+                    None => w.toplevel().map(|t| t.wl_surface().clone().into()),
+                }),
+        };
+        let keyboard = self.seat.get_keyboard().unwrap();
+        if keyboard.current_focus() == focus {
+            return;
+        }
+        let menus = self.x_has_keyboard();
+        keyboard.set_focus(self, focus, SERIAL_COUNTER.next_serial());
+        // X's menus came or went with it: drawn or not,
+        // and the pointer over one that went is over what's below now.
+        if self.x_has_keyboard() != menus {
+            self.queue_redraw();
+            self.repoint();
         }
     }
 }
