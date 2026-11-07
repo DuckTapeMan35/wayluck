@@ -163,6 +163,7 @@ fn run(command: &str, state: &mut Wayluck) -> String {
                 tiles.join("; ")
             }
         },
+        ["asking"] => state.picker_askers().to_string(),
         ["clipboard"] => {
             let x = current_data_device_selection_userdata(&state.seat).is_some();
             if x { "x" } else { "-" }.into()

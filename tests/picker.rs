@@ -206,14 +206,69 @@ fn a_workspace_is_shared_through_a_virtual_output() {
 }
 
 #[test]
-fn one_question_at_a_time() {
+fn asking_again_meanwhile_waits_for_the_same_answer() {
     let mut session = Session::start();
     let first = session.pick();
     session.picker_up();
-    // Asked again meanwhile: cancelled at once; the first is still asked.
-    assert_eq!(answer(session.pick()), (String::new(), false));
-    assert_ne!(session.command("picker"), "-");
+    let mut second = session.pick();
+    // Not cancelled: still waiting, with the first.
+    wait_for(
+        || (session.command("asking") == "2").then_some(()),
+        "the second ask",
+    );
+    assert!(
+        second.try_wait().unwrap().is_none(),
+        "the second ask was cancelled"
+    );
     session.type_keys(&[KEY_ENTER]);
     let (said, chosen) = answer(first);
     assert!(chosen && said.starts_with("Monitor: "), "{said}");
+    assert_eq!(answer(second), (said, true));
+}
+
+#[test]
+fn the_picker_stays_while_anyone_still_asks() {
+    let mut session = Session::start();
+    let mut first = session.pick();
+    session.picker_up();
+    let second = session.pick();
+    wait_for(
+        || (session.command("asking") == "2").then_some(()),
+        "the second ask",
+    );
+    first.kill().unwrap();
+    first.wait().unwrap();
+    wait_for(
+        || (session.command("asking") == "1").then_some(()),
+        "the first to go",
+    );
+    assert_ne!(
+        session.command("picker"),
+        "-",
+        "it closed with someone still asking"
+    );
+    session.type_keys(&[KEY_ESC]);
+    assert_eq!(answer(second), (String::new(), false));
+}
+
+#[test]
+fn the_click_that_chooses_reaches_no_window() {
+    let mut session = Session::start();
+    let window = Window::open(&session, 0xff00ff00);
+    let pick = session.pick();
+    // The window is at the top left, under the monitor's tile: clicked
+    // there, the monitor is shared, and the window is under the pointer
+    // when the button comes up.
+    session.picker_up();
+    session.command("move 100 100");
+    session.command("button 272 down");
+    answer(pick);
+    session.command("button 272 up");
+    // It has the pointer again, and heard no button.
+    session.wait_for(|| window.seen().pointed.then_some(()), "the pointer back");
+    assert!(
+        window.seen().buttons.is_empty(),
+        "{:?}",
+        window.seen().buttons
+    );
 }

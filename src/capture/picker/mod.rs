@@ -1,7 +1,8 @@
 //! Asking the user what to share. Whoever connects to the pick socket asks
 //! (`wayluck pick`, xdg-desktop-portal-wlr's chooser_cmd), and hears only
 //! the answer: one line, or the connection closed if the user chose
-//! nothing. wayluck asks the user itself, with a picker it draws over a
+//! nothing. Whoever asks while the picker is open waits for it too, and
+//! hears the same answer (apps ask twice for one share, sometimes at once). wayluck asks the user itself, with a picker it draws over a
 //! monitor. The window manager is told a picker is open, and offers
 //! its workspaces first; a workspace chosen is shared through a virtual
 //! output the window manager keeps it on until capture stops.
@@ -47,7 +48,9 @@ const SHARE_PATIENCE: Duration = Duration::from_secs(10);
 #[derive(Default)]
 pub struct Picking {
     /// Who asked, until they hear the answer (or go).
-    asker: Option<Asker>,
+    askers: Vec<Asker>,
+    /// The next asker's number.
+    next_asker: u64,
     /// The window manager has been told a picker is open.
     open: bool,
     /// Waiting for the window manager to offer (or run out of patience).
@@ -57,10 +60,15 @@ pub struct Picking {
     shown: Option<overlay::Shown>,
     /// The labels' font, once looked for (None in it: there's none).
     text: Option<Option<Text>>,
+    /// Pointer buttons pressed on the picker, held still: their release
+    /// is its too, even once it's closed.
+    buttons: Vec<u32>,
 }
 
 /// Whoever asked: their connection, and what watches it for them going.
 struct Asker {
+    /// Told apart by it, for the log too.
+    number: u64,
     connection: UnixStream,
     watch: RegistrationToken,
 }
@@ -112,15 +120,23 @@ impl Wayluck {
     }
 
     /// Someone asks the user what to share: the picker goes up, once the
-    /// window manager, if any, has offered its workspaces.
+    /// window manager, if any, has offered its workspaces. If it's open
+    /// already, they wait for it too.
     fn pick(&mut self, connection: UnixStream) {
-        if self.picking.asker.is_some() || self.picking.open {
-            return; // one at a time: closed, as if cancelled
-        }
-        let Some(watch) = self.watch_asker(&connection) else {
-            return;
+        let number = self.picking.next_asker;
+        self.picking.next_asker += 1;
+        let Some(watch) = self.watch_asker(&connection, number) else {
+            return tracing::warn!("pick {number}: can't watch the connection: not asked");
         };
-        self.picking.asker = Some(Asker { connection, watch });
+        self.picking.askers.push(Asker {
+            number,
+            connection,
+            watch,
+        });
+        if self.picking.open {
+            return tracing::info!("pick {number}: asked while the picker is open: waits for it");
+        }
+        tracing::info!("pick {number}: asked what to share");
         self.picking.open = true;
         self.picking.offers.clear();
         let Some(manager) = self.wm.manager.clone() else {
@@ -196,8 +212,9 @@ impl Wayluck {
         self.show_picker();
     }
 
-    /// Whoever asked going (hanging up) closes the picker.
-    fn watch_asker(&mut self, connection: &UnixStream) -> Option<RegistrationToken> {
+    /// Whoever asked going (hanging up) stops waiting; the last one going
+    /// closes the picker.
+    fn watch_asker(&mut self, connection: &UnixStream, number: u64) -> Option<RegistrationToken> {
         let watched = connection.try_clone().and_then(|c| {
             c.set_nonblocking(true)?;
             Ok(c)
@@ -205,16 +222,17 @@ impl Wayluck {
         let source = Generic::new(watched.ok()?, Interest::READ, Mode::Level);
         let watch = self
             .loop_handle
-            .insert_source(source, |_, connection, state| {
+            .insert_source(source, move |_, connection, state| {
                 // They say nothing: anything to read is their end closing.
                 match (&**connection).read(&mut [0; 64]) {
                     Err(e) if e.kind() == ErrorKind::WouldBlock => Ok(PostAction::Continue),
                     Ok(n) if n > 0 => Ok(PostAction::Continue),
                     _ => {
-                        if let Some(asker) = state.picking.asker.take() {
-                            state.loop_handle.remove(asker.watch);
+                        tracing::info!("pick {number}: went before the answer");
+                        state.picking.askers.retain(|a| a.number != number);
+                        if state.picking.askers.is_empty() {
+                            state.picker_gone();
                         }
-                        state.picker_gone();
                         Ok(PostAction::Remove)
                     }
                 }
@@ -226,14 +244,17 @@ impl Wayluck {
     /// cancelled, the connection closed with nothing said), if they're
     /// still there.
     fn answer(&mut self, answer: Option<String>) {
-        let Some(mut asker) = self.picking.asker.take() else {
-            return;
-        };
-        self.loop_handle.remove(asker.watch);
-        if let Some(answer) = answer
-            && let Err(e) = writeln!(asker.connection, "{answer}")
-        {
-            tracing::debug!("whoever asked what to share went: {e}");
+        for mut asker in std::mem::take(&mut self.picking.askers) {
+            self.loop_handle.remove(asker.watch);
+            let number = asker.number;
+            let Some(answer) = &answer else {
+                tracing::info!("pick {number}: nothing shared");
+                continue;
+            };
+            match writeln!(asker.connection, "{answer}") {
+                Ok(()) => tracing::info!("pick {number}: shared {answer}"),
+                Err(e) => tracing::info!("pick {number}: went before the answer ({e})"),
+            }
         }
     }
 

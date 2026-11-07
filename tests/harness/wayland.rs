@@ -53,6 +53,8 @@ pub struct Seen {
     pub pointed: bool,
     /// Keys pressed while it had the keyboard (evdev codes).
     pub keys: Vec<u32>,
+    /// Pointer buttons pressed (true) and released (false) over it.
+    pub buttons: Vec<(u32, bool)>,
 }
 
 pub struct Window {
@@ -357,6 +359,11 @@ impl Dispatch<WlPointer, ()> for Client {
         match event {
             wl_pointer::Event::Enter { .. } => seen.pointed = true,
             wl_pointer::Event::Leave { .. } => seen.pointed = false,
+            wl_pointer::Event::Button { button, state, .. } => {
+                let pressed =
+                    state == wayland_client::WEnum::Value(wl_pointer::ButtonState::Pressed);
+                seen.buttons.push((button, pressed));
+            }
             _ => {}
         }
     }

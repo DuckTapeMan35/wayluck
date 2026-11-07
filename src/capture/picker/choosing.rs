@@ -42,8 +42,28 @@ impl Wayluck {
         }
     }
 
+    /// A pointer button pressed (or released) with the pointer at at
+    /// (global): true if it's the picker's, which no client hears. While
+    /// it's up every button is; a click shares the tile under it. The
+    /// release of a button pressed on it is too, once it's closed: the
+    /// client under the pointer never had the press.
+    pub fn picker_button(&mut self, code: u32, pressed: bool, at: Point<f64, Logical>) -> bool {
+        if !pressed && let Some(i) = self.picking.buttons.iter().position(|b| *b == code) {
+            self.picking.buttons.swap_remove(i);
+            return true;
+        }
+        if !self.picker_shown() {
+            return false;
+        }
+        if pressed {
+            self.picking.buttons.push(code);
+            self.picker_click(at);
+        }
+        true
+    }
+
     /// A click at at (global): the tile there, if any, is shared.
-    pub fn picker_click(&mut self, at: Point<f64, Logical>) {
+    fn picker_click(&mut self, at: Point<f64, Logical>) {
         if let Some(i) = self.picker_tile_at(at) {
             self.picker_select(i);
             self.picker_choose();

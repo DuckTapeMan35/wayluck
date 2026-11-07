@@ -120,12 +120,9 @@ impl Wayluck {
         let mods = self.seat.get_keyboard().unwrap().modifier_state();
         let pressed = state == ButtonState::Pressed;
 
-        // The picker has the pointer's buttons while it's up: a click
-        // shares the tile under it.
-        if self.picker_shown() {
-            if pressed {
-                self.picker_click(pointer.current_location());
-            }
+        // The picker's buttons: any while it's up (a click shares the tile
+        // under it), and the release of one pressed on it.
+        if self.picker_button(code, pressed, pointer.current_location()) {
             return;
         }
 

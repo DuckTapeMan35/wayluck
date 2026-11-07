@@ -176,6 +176,12 @@ impl Wayluck {
         }
     }
 
+    /// How many are waiting for the picker's answer.
+    #[cfg(feature = "test-harness")]
+    pub fn picker_askers(&self) -> usize {
+        self.picking.askers.len()
+    }
+
     /// What the picker offers, if it's up: each choice, its tile (global),
     /// and whether it's selected.
     #[cfg(feature = "test-harness")]
