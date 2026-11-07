@@ -4,7 +4,9 @@
 mod buffers;
 mod syncobj;
 
-use crate::{Wayluck, state::ClientState};
+use crate::{
+    Wayluck, layers::shell::dead_layer_commit, state::ClientState, windows::handle_commit,
+};
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     reexports::wayland_server::{Client, protocol::wl_surface::WlSurface},
@@ -35,7 +37,7 @@ impl CompositorHandler for Wayluck {
     fn commit(&mut self, surface: &WlSurface) {
         // Keep the surface's buffer for rendering.
         on_commit_buffer_handler::<Self>(surface);
-        crate::handlers::handle_commit(self, surface);
+        handle_commit(self, surface);
         // A new buffer, or a change to what's drawn: a frame shows it. (The
         // damage tracker draws only what really changed.)
         self.queue_redraw();
@@ -44,7 +46,7 @@ impl CompositorHandler for Wayluck {
     fn new_surface(&mut self, surface: &WlSurface) {
         // Before smithay's own hooks, which come with a role
         add_pre_commit_hook::<Self, _>(surface, |_, _, surface| {
-            crate::layers::shell::dead_layer_commit(surface);
+            dead_layer_commit(surface);
         });
         // A new GPU buffer waits until it's drawn.
         add_pre_commit_hook::<Self, _>(surface, |state, _, surface| {

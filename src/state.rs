@@ -1,15 +1,13 @@
 //! Everything wayluck keeps, and the socket clients connect to.
 
 use crate::{
-    atomic::Pending,
     capture::image_capture::ImageCapture,
     capture::picker::Picking,
     capture::screencopy,
     render::cursor::Cursor,
     scenes::{SceneId, Scenes},
-    toplevel_list::ToplevelList,
     virtual_output::VirtualOutput,
-    windows::Windows,
+    windows::{Pending, ToplevelList, Windows},
     wm::WmState,
     xwayland::WaylandSelections,
 };

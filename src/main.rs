@@ -1,6 +1,5 @@
 //! wayluck: a Wayland compositor that doesn't decide where windows go.
 
-mod atomic;
 mod backend;
 mod capture;
 mod clipboard;
@@ -8,7 +7,6 @@ mod handlers;
 mod input;
 mod layers;
 mod pick;
-mod popups;
 mod programs;
 mod protocol;
 mod render;
@@ -17,7 +15,6 @@ mod state;
 mod surfaces;
 #[cfg(feature = "test-harness")]
 mod testing;
-mod toplevel_list;
 mod virtual_output;
 mod windows;
 mod wm;
