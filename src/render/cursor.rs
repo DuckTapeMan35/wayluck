@@ -88,7 +88,7 @@ impl Cursor {
                     None,
                     Kind::Cursor,
                 )
-                .map(|e| vec![Element::Cursor(e)])
+                .map(|e| vec![Element::Memory(e)])
                 .unwrap_or_default()
             }
         }

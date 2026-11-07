@@ -1,5 +1,6 @@
-//! The picker's text: one font, the system's sans-serif (as fontconfig's
-//! fc-match finds it), each line drawn once into an image (fontdue).
+//! Text wayluck draws (the picker's labels): one font, the system's
+//! sans-serif (as fontconfig's fc-match finds it), each line drawn once into
+//! an image (fontdue).
 
 use std::process::Command;
 
@@ -29,6 +30,24 @@ impl Text {
         let font = Font::from_bytes(data, FontSettings::default())
             .map_err(|e| format!("the font {path}: {e}"))?;
         Ok(Text { font })
+    }
+
+    /// text, px pixels tall, no wider than width pixels: cut short, with
+    /// "…", if it would be.
+    pub fn line_within(&self, text: &str, px: f32, width: usize) -> Line {
+        let line = self.line(text, px);
+        if line.width <= width {
+            return line;
+        }
+        let mut chars: Vec<char> = text.chars().collect();
+        while chars.pop().is_some() {
+            let kept: String = chars.iter().collect();
+            let line = self.line(&format!("{}…", kept.trim_end()), px);
+            if line.width <= width {
+                return line;
+            }
+        }
+        self.line("…", px)
     }
 
     /// text, px pixels tall (the font's size): as wide as it is, as tall as

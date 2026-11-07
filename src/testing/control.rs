@@ -13,11 +13,15 @@
 //!   `hidden`), "; " between.
 //! - `clipboard`: `x` if what's on the clipboard is an X program's (copied
 //!   while X had the keyboard), `-` otherwise.
+//! - `picker`: what the picker offers, if it's up, and where its tiles
+//!   are: `monitor NAME@x,y,widthxheight` (or `workspace N@…`, `window
+//!   ID@…`), ` *` after the selected one, "; " between; `-` if it isn't
+//!   up.
 //!
 //! It's at $XDG_RUNTIME_DIR/wayluck-test.<WAYLAND_DISPLAY>. Builds without
 //! the feature have none of this: the harness checks they refuse it.
 
-use crate::{Wayluck, windows};
+use crate::{Wayluck, capture::picker::overlay::Choice, windows};
 use smithay::{
     backend::{
         input::{ButtonState, InputTime, KeyState},
@@ -141,6 +145,24 @@ fn run(command: &str, state: &mut Wayluck) -> String {
                 .collect();
             menus.join("; ")
         }
+        ["picker"] => match state.picker_tiles() {
+            None => "-".into(),
+            Some(tiles) => {
+                let tiles: Vec<String> = (tiles.into_iter())
+                    .map(|(choice, rect, selected)| {
+                        let what = match choice {
+                            Choice::Monitor(output) => format!("monitor {}", output.name()),
+                            Choice::Workspace(scene) => format!("workspace {}", scene.number()),
+                            Choice::Window(id) => format!("window {}", u32::from(id)),
+                        };
+                        let (x, y, w, h) = (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h);
+                        let mark = if selected { " *" } else { "" };
+                        format!("{what}@{x},{y},{w}x{h}{mark}")
+                    })
+                    .collect();
+                tiles.join("; ")
+            }
+        },
         ["clipboard"] => {
             let x = current_data_device_selection_userdata(&state.seat).is_some();
             if x { "x" } else { "-" }.into()

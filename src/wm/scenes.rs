@@ -11,7 +11,7 @@
 //! shown scene at its monitor's corner plus where it is in the scene.
 
 use super::protocol::wayluck_wm_scene_v1::{self, WayluckWmSceneV1};
-use crate::{Wayluck, capture::image_capture, render::rounded::Outline, windows::WindowId};
+use crate::{Wayluck, render::rounded::Outline, windows::WindowId};
 use smithay::{
     backend::renderer::gles::element::PixelShaderElement,
     output::Output,
@@ -268,7 +268,6 @@ impl Dispatch<WayluckWmSceneV1, SceneId> for Wayluck {
     /// wayluck's own scene where they are (manager destroyed).
     fn destroyed(state: &mut Self, _client: ClientId, _scene: &WayluckWmSceneV1, id: &SceneId) {
         state.scenes.remove(*id);
-        state.stop_capture_sessions(&image_capture::Source::Scene(*id));
         state.loop_handle.insert_idle(|state| state.sync_space());
     }
 }

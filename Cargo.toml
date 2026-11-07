@@ -12,13 +12,15 @@ rustix = { version = "1.1.6", features = ["process"] }
 wayland-server = "0.31.14"
 wayland-backend = "0.3.17"
 wayland-scanner = "0.31.11"
-wayland-client = "0.31.15"
 bitflags = "2.13.2"
 xcursor = "0.3.11"
 fontdue = "0.9.5"
-wayland-protocols = { version = "0.32.13", features = ["client", "server", "staging"] }
+wayland-protocols = { version = "0.32.13", features = ["server", "staging"] }
 
 [dev-dependencies]
+# The tests' Wayland clients.
+wayland-client = "0.31.15"
+wayland-protocols = { version = "0.32.13", features = ["client"] }
 # The tests' X clients: what an X program can do.
 x11rb = { version = "0.14.0", features = ["xinput"] }
 
@@ -36,6 +38,10 @@ required-features = ["test-harness"]
 
 [[test]]
 name = "robustness"
+required-features = ["test-harness"]
+
+[[test]]
+name = "picker"
 required-features = ["test-harness"]
 
 [features]

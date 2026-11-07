@@ -3,7 +3,7 @@
 
 mod programs;
 
-pub use programs::{command, raise_open_files_limit};
+pub use programs::raise_open_files_limit;
 
 use crate::Wayluck;
 use std::{ffi::OsStr, path::PathBuf};

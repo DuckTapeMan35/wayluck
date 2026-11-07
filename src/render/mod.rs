@@ -2,6 +2,8 @@
 
 pub mod cursor;
 pub mod rounded;
+pub mod text;
+pub mod thumbnail;
 
 use crate::{Wayluck, layers::Side, wm::scenes::Scene};
 use rounded::{AsGles, BorderElement, ClipIds, ClippedSurface, Shaders};
@@ -12,6 +14,7 @@ use smithay::{
         element::{
             AsRenderElements, Element as _, Id, Kind,
             memory::MemoryRenderBufferRenderElement,
+            solid::SolidColorRenderElement,
             surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
         },
         gles::element::PixelShaderElement,
@@ -36,7 +39,9 @@ render_elements! {
     Surface = WaylandSurfaceRenderElement<R>,
     Clipped = ClippedSurface<R>,
     Border = BorderElement,
-    Cursor = MemoryRenderBufferRenderElement<R>,
+    Memory = MemoryRenderBufferRenderElement<R>,
+    Solid = SolidColorRenderElement,
+    Thumbnail = thumbnail::Thumbnail<R>,
 }
 
 /// Draw output into a framebuffer (nested: the window's), over the clear
@@ -85,6 +90,35 @@ where
         let at = pointer - area.loc.to_f64();
         elements.extend(state.cursor.elements(renderer, at, scale));
     }
+
+    // The picker, while it's up here, covers everything else.
+    if let Some(picker) = state.picker_elements(output, renderer) {
+        elements.extend(picker);
+        return elements;
+    }
+
+    elements.extend(output_elements(state, output, renderer, scale));
+    elements
+}
+
+/// What output shows under the cursor and the picker, front to back, drawn
+/// from its top left corner at scale: bars and overlays, the windows of the
+/// scene it shows with their borders, then wallpapers and what else is
+/// below windows.
+pub fn output_elements<R>(
+    state: &mut Wayluck,
+    output: &Output,
+    renderer: &mut R,
+    scale: Scale<f64>,
+) -> Vec<Element<R>>
+where
+    R: Renderer + ImportAll + ImportMem + AsGles,
+    R::TextureId: Clone + Texture + Send + 'static,
+{
+    let Some(area) = state.space.output_geometry(output) else {
+        return Vec::new();
+    };
+    let mut elements = Vec::new();
 
     // Bars and overlays above windows; then the windows; then what's below.
     // A virtual output's are its template's.
@@ -309,6 +343,12 @@ pub fn frame_done(state: &mut Wayluck, output: &Output) {
     }
     for menu in &state.x_menus {
         menu.send_frame(output, now, Some(Duration::ZERO), |_, _| {
+            Some(output.clone())
+        });
+    }
+    // What the picker shows of windows on no monitor.
+    for window in state.picker_windows(output) {
+        window.send_frame(output, now, Some(Duration::ZERO), |_, _| {
             Some(output.clone())
         });
     }

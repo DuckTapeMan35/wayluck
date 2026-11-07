@@ -63,6 +63,13 @@ impl Wayluck {
             return FilterResult::Intercept(());
         }
 
+        // The picker has every key while it's up: Escape closes it.
+        if self.picker_shown() {
+            self.keys_to_wm.push(code);
+            self.picker_key(keysym.modified_sym());
+            return FilterResult::Intercept(());
+        }
+
         // As typed (shift+1 is !) and as on the key (1).
         let mut syms = keysym.raw_syms();
         syms.push(keysym.modified_sym());

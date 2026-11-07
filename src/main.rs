@@ -5,7 +5,6 @@ mod capture;
 mod clipboard;
 mod input;
 mod layers;
-mod pick;
 mod render;
 mod session;
 mod state;
@@ -27,12 +26,10 @@ pub use state::Wayluck;
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // `wayluck pick` and `wayluck picker` aren't the compositor: clients of
-    // the running one, asking the user what to share.
-    match std::env::args().nth(1).as_deref() {
-        Some("pick") => std::process::exit(pick::run_pick()),
-        Some("picker") => std::process::exit(pick::run_picker()),
-        _ => {}
+    // `wayluck pick` isn't the compositor: a client of the running one,
+    // asking the user what to share.
+    if std::env::args().nth(1).as_deref() == Some("pick") {
+        std::process::exit(capture::picker::run_pick());
     }
 
     // Logs to stderr: stdout is the programs' it runs.

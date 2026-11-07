@@ -201,6 +201,37 @@ impl Session {
         self.command(&format!("move {x} {y}"));
     }
 
+    /// Ask the user what to share, as xdg-desktop-portal-wlr does: `wayluck
+    /// pick`, running until the user answers (its stdout is the answer).
+    pub fn pick(&self) -> Child {
+        Command::new(env!("CARGO_BIN_EXE_wayluck"))
+            .arg("pick")
+            .env("XDG_RUNTIME_DIR", &self.dir)
+            .env("WAYLAND_DISPLAY", &self.wayland_display)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    /// What the picker offers, once it's up ("monitor NAME; window ID", say).
+    pub fn picker_up(&mut self) -> String {
+        let start = Instant::now();
+        loop {
+            let up = self.command("picker");
+            if up != "-" {
+                return up;
+            }
+            if start.elapsed() > PATIENCE {
+                panic!(
+                    "gave up waiting for the picker\nwayluck's log:\n{}",
+                    self.log()
+                );
+            }
+            sleep(Duration::from_millis(20));
+        }
+    }
+
     /// Click the middle of the window titled so.
     pub fn click_window(&mut self, title: &str) {
         let (x, y, w, h) = self.window(title);

@@ -8,8 +8,7 @@
 //! XRGB8888 at the source's size, in shared memory or a dmabuf on wayluck's
 //! GPU (if the backend says which: DmabufTarget), and again if that changes
 //! (a frame made for the old size fails, so the client makes a new buffer).
-//! A session made for a picker's thumbnail has smaller frames:
-//! the source drawn shrunk to fit. A session's first frame is copied at
+//! A session's first frame is copied at
 //! once; each later one once something in the source changed (the session's
 //! own damage tracker says what). A window being captured keeps drawing even
 //! off screen: it gets frame callbacks while it has a session. Cursor
@@ -23,7 +22,7 @@ mod sources;
 
 pub use frames::capture_frames;
 
-use crate::{Wayluck, windows::WindowId, wm::scenes::SceneId};
+use crate::{Wayluck, windows::WindowId};
 use smithay::{
     backend::{
         allocator::{Fourcc, Modifier, format::FormatSet},
@@ -54,8 +53,6 @@ use std::sync::Mutex;
 pub enum Source {
     Output(Output),
     Window(WindowId),
-    /// A scene's windows, as laid out in it, shown or not
-    Scene(SceneId),
     /// It was gone already when the source was made.
     Gone,
 }
@@ -83,7 +80,7 @@ pub struct ImageCapture {
     sessions: Vec<Session>,
     /// Frames waiting to be copied.
     frames: Vec<Waiting>,
-    /// Captured windows' and scenes' frame callbacks.
+    /// Captured windows' frame callbacks.
     pacers: Vec<(Source, RegistrationToken)>,
 }
 
@@ -109,8 +106,6 @@ struct Session {
     resource: ExtImageCopyCaptureSessionV1,
     source: Source,
     cursors: bool,
-    /// How big its frames may be, if smaller than the source
-    fit: Option<Size<i32, Physical>>,
     /// The buffer size it last told its client.
     size: Size<i32, Physical>,
     /// What the source last showed, to tell when it changed, and where.

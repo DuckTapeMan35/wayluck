@@ -13,7 +13,7 @@ use smithay::{
         renderer::{
             Bind, ExportMem, ImportAll, ImportMem, Offscreen, Renderer, Texture,
             damage::OutputDamageTracker,
-            element::{AsRenderElements, utils::RescaleRenderElement},
+            element::{AsRenderElements, Element as _, Kind},
             gles::GlesRenderbuffer,
         },
     },
@@ -31,10 +31,7 @@ use smithay::{
 };
 use std::time::Duration;
 
-use super::{
-    FrameData, Source, Waiting,
-    sessions::{frame_size, send_constraints},
-};
+use super::{FrameData, Source, Waiting, sessions::send_constraints};
 
 impl Wayluck {
     /// Is a frame of output waiting (for step 3's capture_stopped)?
@@ -70,12 +67,11 @@ where
             continue;
         };
         let source = state.image_capture.sessions[at].source.clone();
-        let Some(full) = state.source_size(&source) else {
+        let Some(size) = state.source_size(&source) else {
             state.stop_capture_sessions(&source);
             w.frame.failed(FailureReason::Stopped);
             continue;
         };
-        let (size, shrink) = frame_size(full, state.image_capture.sessions[at].fit);
         // Its size changed (a window resized): the client hears the new
         // one, and makes a new buffer for its next frame.
         let session = &mut state.image_capture.sessions[at];
@@ -89,10 +85,6 @@ where
         }
         let cursors = session.cursors;
         let (elements, scale) = source_elements(state, &source, renderer, cursors);
-        // Shrunk to the frame's size, from its top left corner.
-        let elements: Vec<_> = (elements.into_iter())
-            .map(|e| RescaleRenderElement::from_element(e, Point::default(), shrink))
-            .collect();
         let session = &mut state.image_capture.sessions[at];
         let damage = session.damage.damage_output(1, &elements).ok();
         let damage: Vec<Rectangle<i32, Physical>> =
@@ -144,7 +136,7 @@ where
         Source::Output(output) => {
             let elements = render::elements(state, output, renderer)
                 .into_iter()
-                .filter(|e| cursors || !matches!(e, Element::Cursor(_)))
+                .filter(|e| cursors || e.kind() != Kind::Cursor)
                 .collect();
             (elements, output.current_scale().fractional_scale())
         }
@@ -155,24 +147,6 @@ where
             let corner = window.geometry().loc;
             let at = Point::<i32, Physical>::from((-corner.x, -corner.y));
             let elements = window.render_elements(renderer, at, Scale::from(1.0), 1.0);
-            (elements, 1.0)
-        }
-        Source::Scene(id) => {
-            let Some(scene) = state.scenes.get(*id) else {
-                return (Vec::new(), 1.0);
-            };
-            // Topmost first, as drawing wants them.
-            let windows: Vec<_> = (scene.windows().rev())
-                .filter_map(|(w, at)| {
-                    let radius = state.windows.border_mut(w).map_or(0, |b| b.radius);
-                    Some((state.windows.get(w)?.clone(), at, radius))
-                })
-                .collect();
-            let elements = (windows.into_iter())
-                .flat_map(|(window, at, radius)| {
-                    render::window_elements(renderer, &window, at, Scale::from(1.0), radius, None)
-                })
-                .collect();
             (elements, 1.0)
         }
         Source::Gone => (Vec::new(), 1.0),

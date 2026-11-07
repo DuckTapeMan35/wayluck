@@ -1,7 +1,7 @@
 //! Sessions on a source: what buffers their frames take, and keeping a
-//! captured window or scene drawn while it's captured.
+//! captured window drawn while it's captured.
 
-use crate::{Wayluck, windows::WindowId};
+use crate::Wayluck;
 use smithay::{
     backend::{allocator::Fourcc, renderer::damage::OutputDamageTracker},
     reexports::{
@@ -35,37 +35,29 @@ impl Wayluck {
                 let size = self.windows.get(*id)?.geometry().size;
                 (size.w, size.h).into()
             }
-            Source::Scene(id) => {
-                let size = self.scenes.get(*id)?.size;
-                (size.w, size.h).into()
-            }
             Source::Gone => return None,
         };
         (size.w > 0 && size.h > 0).then_some(size)
     }
 
-    /// A new session on source (painting the cursor in, with cursors), its
-    /// frames no bigger than fit if given: its client hears what buffer to
-    /// give it.
+    /// A new session on source (painting the cursor in, with cursors): its
+    /// client hears what buffer to give it.
     pub fn start_session(
         &mut self,
         session: ExtImageCopyCaptureSessionV1,
         source: Source,
         cursors: bool,
-        fit: Option<Size<i32, Physical>>,
     ) {
-        let Some(full) = self.source_size(&source) else {
+        let Some(size) = self.source_size(&source) else {
             session.stopped();
             return;
         };
-        let (size, _) = frame_size(full, fit);
         send_constraints(&session, size, self.image_capture.dmabuf.as_ref());
         self.start_capture_pacing(&source);
         self.image_capture.sessions.push(Session {
             resource: session,
             source,
             cursors,
-            fit,
             size,
             damage: OutputDamageTracker::new(size, 1.0, Transform::Normal),
             copied: false,
@@ -97,45 +89,33 @@ impl Wayluck {
         }
     }
 
-    /// A window or scene got its first session: frame callbacks for the
-    /// windows while they're off screen (on screen, their output gives them
-    /// them), at 60 Hz.
+    /// A window got its first session: frame callbacks for it while it's
+    /// off screen (on screen, its output gives it them), at 60 Hz.
     fn start_capture_pacing(&mut self, source: &Source) {
-        let paced = source.clone();
-        if !matches!(paced, Source::Window(_) | Source::Scene(_))
-            || self.image_capture.pacers.iter().any(|(s, _)| *s == paced)
-        {
+        let Source::Window(id) = *source else {
+            return;
+        };
+        if self.image_capture.pacers.iter().any(|(s, _)| s == source) {
             return;
         }
         let every = Duration::from_nanos(1_000_000_000 / 60);
         let timer = Timer::from_duration(every);
         let pacer = self.loop_handle.insert_source(timer, move |_, _, state| {
-            let ids: Vec<WindowId> = match &paced {
-                Source::Window(id) => vec![*id],
-                Source::Scene(id) => (state.scenes.get(*id).into_iter())
-                    .flat_map(|scene| scene.windows().map(|(w, _)| w))
-                    .collect(),
-                _ => Vec::new(),
-            };
             let Some(output) = state.monitors().next().cloned() else {
                 return TimeoutAction::ToDuration(every);
             };
             let now = state.start_time.elapsed();
-            for id in ids {
-                let Some(window) = state.windows.get(id).cloned() else {
-                    continue;
-                };
-                if state.space.outputs_for_element(&window).is_empty() {
-                    window.send_frame(&output, now, Some(Duration::ZERO), |_, _| {
-                        Some(output.clone())
-                    });
-                }
+            let window = state.windows.get(id).cloned();
+            if let Some(window) = window.filter(|w| state.space.outputs_for_element(w).is_empty()) {
+                window.send_frame(&output, now, Some(Duration::ZERO), |_, _| {
+                    Some(output.clone())
+                });
             }
             TimeoutAction::ToDuration(every)
         });
         match pacer {
             Ok(token) => self.image_capture.pacers.push((source.clone(), token)),
-            Err(e) => tracing::warn!("can't pace a capture's windows: {e}"),
+            Err(e) => tracing::warn!("can't pace a captured window: {e}"),
         }
     }
 
@@ -151,24 +131,6 @@ impl Wayluck {
             self.loop_handle.remove(token);
         }
     }
-}
-
-/// How big a session's frames of a source this big are, and how much
-/// smaller than the source that is: as big as the source, or shrunk to fit
-/// in fit, keeping its shape.
-pub(super) fn frame_size(
-    source: Size<i32, Physical>,
-    fit: Option<Size<i32, Physical>>,
-) -> (Size<i32, Physical>, f64) {
-    let Some(fit) = fit else {
-        return (source, 1.0);
-    };
-    let shrink = (fit.w as f64 / source.w as f64)
-        .min(fit.h as f64 / source.h as f64)
-        .min(1.0);
-    let w = (source.w as f64 * shrink).round().max(1.0) as i32;
-    let h = (source.h as f64 * shrink).round().max(1.0) as i32;
-    ((w, h).into(), shrink)
 }
 
 /// Tell a session's client what buffer to give it: shared memory, or a
@@ -233,7 +195,7 @@ impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for Wayluck {
                 let session = data_init.init(session, ());
                 let source = source.data::<Source>().cloned().unwrap_or(Source::Gone);
                 let cursors = options.contains(Options::PaintCursors);
-                state.start_session(session, source, cursors, None);
+                state.start_session(session, source, cursors);
             }
             Request::CreatePointerCursorSession { session, .. } => {
                 data_init.init(session, ());

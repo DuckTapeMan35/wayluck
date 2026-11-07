@@ -1,6 +1,6 @@
 //! A window manager for tests: it shows one scene on the first output,
 //! places every window it hears of at the same rectangle in it, and
-//! focuses it. It records what wayluck tells it, and does what a test asks
+//! focuses it. It offers that scene to the picker, as a workspace. It records what wayluck tells it, and does what a test asks
 //! (close a window, make it fullscreen). It runs on a thread of its own.
 
 use super::{Session, wait_for};
@@ -69,6 +69,8 @@ struct Log {
     windows: Vec<Heard>,
     /// Transactions wayluck refused.
     failed: usize,
+    /// Workspaces the user chose to share.
+    shared: usize,
 }
 
 pub struct Wm {
@@ -92,6 +94,7 @@ impl Wm {
         let windows = Arc::new(Mutex::new(Vec::new()));
         let mut client = Client {
             scene: manager.scene(&qh, ()),
+            output: None,
             log: log.clone(),
             windows: windows.clone(),
         };
@@ -146,6 +149,11 @@ impl Wm {
         self.log.lock().unwrap().failed
     }
 
+    /// Workspaces the user chose to share, so far.
+    pub fn shared(&self) -> usize {
+        self.log.lock().unwrap().shared
+    }
+
     /// Ask window id's client to close it.
     pub fn close(&self, id: u32) {
         self.proxy(id).close();
@@ -172,6 +180,8 @@ impl Wm {
 
 struct Client {
     scene: WayluckWmSceneV1,
+    /// The output it shows its scene on.
+    output: Option<WayluckWmOutputV1>,
     log: Arc<Mutex<Log>>,
     windows: Arc<Mutex<Vec<(WayluckWmWindowV1, u32)>>>,
 }
@@ -209,6 +219,17 @@ impl Dispatch<WayluckWmManagerV1, ()> for Client {
                 let tx = manager.transaction(qh, ());
                 tx.show(&id, Some(&client.scene));
                 tx.commit();
+                client.output.get_or_insert(id);
+            }
+            // Its one workspace.
+            wayluck_wm_manager_v1::Event::PickerOpened => {
+                if let Some(output) = &client.output {
+                    manager.offer_workspace(&client.scene, output, "main".into());
+                }
+                manager.offers_done();
+            }
+            wayluck_wm_manager_v1::Event::ShareWorkspace { .. } => {
+                client.log.lock().unwrap().shared += 1;
             }
             // Placed and focused at once.
             wayluck_wm_manager_v1::Event::Window { window, id } => {
@@ -231,6 +252,7 @@ impl Dispatch<WayluckWmManagerV1, ()> for Client {
     wayland_client::event_created_child!(Client, WayluckWmManagerV1, [
         wayluck_wm_manager_v1::EVT_OUTPUT_OPCODE => (WayluckWmOutputV1, ()),
         wayluck_wm_manager_v1::EVT_WINDOW_OPCODE => (WayluckWmWindowV1, ()),
+        wayluck_wm_manager_v1::EVT_SHARE_WORKSPACE_OPCODE => (WayluckWmOutputV1, ()),
     ]);
 }
 

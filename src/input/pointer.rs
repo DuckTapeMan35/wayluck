@@ -59,8 +59,12 @@ impl Wayluck {
         }
         let over = self.window_under(location);
         self.wm_pointer_moved(location, over);
+        // The picker, if it's up, selects the tile under it.
+        if self.picker_shown() {
+            self.picker_pointer(location);
+        }
         // While the window manager drags something, no client has the pointer.
-        let under = if self.wm.pointer_grabbed {
+        let under = if self.wm.pointer_grabbed || self.picker_shown() {
             None
         } else {
             self.surface_under(location)
@@ -86,7 +90,11 @@ impl Wayluck {
         }
         let pointer = self.seat.get_pointer().unwrap();
         let location = pointer.current_location();
-        let under = self.surface_under(location);
+        let under = if self.picker_shown() {
+            None
+        } else {
+            self.surface_under(location)
+        };
         pointer.motion(
             self,
             under,
@@ -111,6 +119,15 @@ impl Wayluck {
         // the client's.
         let mods = self.seat.get_keyboard().unwrap().modifier_state();
         let pressed = state == ButtonState::Pressed;
+
+        // The picker has the pointer's buttons while it's up: a click
+        // shares the tile under it.
+        if self.picker_shown() {
+            if pressed {
+                self.picker_click(pointer.current_location());
+            }
+            return;
+        }
 
         if self.wm_button(code, pressed, wm::modifier_bits(&mods)) || self.wm.pointer_grabbed {
             return;

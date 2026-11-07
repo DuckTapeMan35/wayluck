@@ -173,7 +173,7 @@ impl Wayluck {
         Self::toplevel_list_global(&dh);
         Self::image_capture_globals(&dh);
         // Asking the user what to share.
-        Self::picker_global(&dh);
+        Self::listen_for_picks(&event_loop.handle(), &socket_name);
         // One keyboard (the default keymap; 200 ms delay, 25 repeats/s) and
         // one pointer, whatever the backend has.
         seat.add_keyboard(Default::default(), 200, 25)
@@ -280,7 +280,6 @@ fn listen(mut display: Display<Wayluck>, event_loop: &mut EventLoop<Wayluck>) ->
 #[derive(Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
-    pub picker: bool,
     pub copied: std::sync::Mutex<Vec<(Output, u64)>>,
 }
 

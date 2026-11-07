@@ -16,7 +16,9 @@ use smithay::{
         allocator::{Buffer as _, Fourcc, dmabuf::Dmabuf},
         renderer::{
             Bind, ExportMem, ImportAll, ImportMem, Offscreen, Renderer, Texture,
-            damage::OutputDamageTracker, element::RenderElement, gles::GlesRenderbuffer,
+            damage::OutputDamageTracker,
+            element::{Element as _, Kind, RenderElement},
+            gles::GlesRenderbuffer,
         },
     },
     output::Output,
@@ -270,7 +272,7 @@ where
         // The cursor only if asked for (where wayluck draws it at all).
         let drawn: Vec<&Element<R>> = elements
             .iter()
-            .filter(|e| data.cursor || !matches!(e, Element::Cursor(_)))
+            .filter(|e| data.cursor || e.kind() != Kind::Cursor)
             .collect();
         let Some(size) = output.current_mode().map(|m| m.size) else {
             copy.frame.failed();
