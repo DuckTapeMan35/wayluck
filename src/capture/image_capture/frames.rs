@@ -1,6 +1,7 @@
 //! Frames: copying what a source shows into a session's buffer, once
 //! something in it changed.
 
+use super::{FrameData, Source, Waiting, sessions::send_constraints};
 use crate::{
     Wayluck,
     capture::screencopy,
@@ -19,6 +20,7 @@ use smithay::{
     },
     output::Output,
     reexports::{
+        calloop::timer::{TimeoutAction, Timer},
         wayland_protocols::ext::image_copy_capture::v1::server::ext_image_copy_capture_frame_v1::{
             self, ExtImageCopyCaptureFrameV1, FailureReason,
         },
@@ -29,9 +31,11 @@ use smithay::{
     },
     utils::{Clock, Monotonic, Physical, Point, Rectangle, Scale, Transform},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use super::{FrameData, Source, Waiting, sessions::send_constraints};
+/// How long a frame waits for something to change before it's copied
+/// anyway: something still is captured at least this often.
+const STILL_FRAME: Duration = Duration::from_millis(250);
 
 impl Wayluck {
     /// Is a frame of output waiting (for step 3's capture_stopped)?
@@ -89,8 +93,11 @@ where
         let damage = session.damage.damage_output(1, &elements).ok();
         let damage: Vec<Rectangle<i32, Physical>> =
             damage.and_then(|(d, _)| d.cloned()).unwrap_or_default();
-        if session.copied && damage.is_empty() {
-            later.push(w); // nothing new yet
+        // Nothing new yet: it waits for a change, but not for long. A
+        // capturer may have dropped the last frames (screen sharing does,
+        // while its stream starts): it gets what's there, as it is.
+        if session.copied && damage.is_empty() && w.asked.elapsed() < STILL_FRAME {
+            later.push(w);
             continue;
         }
         let first = !session.copied;
@@ -116,6 +123,19 @@ where
                 w.frame.failed(FailureReason::Unknown);
             }
         }
+    }
+    // Drawn again when the first of those waiting has waited long enough.
+    let oldest = later.iter().map(|w| w.asked).min();
+    if let Some(oldest) = oldest
+        && state.image_capture.nudge.is_none()
+    {
+        let timer = Timer::from_duration(STILL_FRAME.saturating_sub(oldest.elapsed()));
+        let nudge = state.loop_handle.insert_source(timer, |_, _, state| {
+            state.image_capture.nudge = None;
+            state.queue_redraw();
+            TimeoutAction::Drop
+        });
+        state.image_capture.nudge = nudge.ok();
     }
     state.image_capture.frames.extend(later);
 }
@@ -206,6 +226,7 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, FrameData> for Wayluck {
                     frame: frame.clone(),
                     session: data.session.clone(),
                     buffer,
+                    asked: Instant::now(),
                 });
                 if let Source::Output(output) = &source {
                     state.capture_activity(output);

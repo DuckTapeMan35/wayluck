@@ -3,9 +3,11 @@
 
 #![allow(dead_code)] // each test uses some of it
 
+pub mod capture;
 pub mod wayland;
 pub mod wm;
 pub mod x;
+
 use std::{
     io::{BufRead, BufReader, Write},
     os::unix::net::UnixStream,

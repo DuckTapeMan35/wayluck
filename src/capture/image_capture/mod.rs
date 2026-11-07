@@ -20,9 +20,8 @@ mod frames;
 mod sessions;
 mod sources;
 
-pub use frames::capture_frames;
-
 use crate::{Wayluck, windows::WindowId};
+pub use frames::capture_frames;
 use smithay::{
     backend::{
         allocator::{Fourcc, Modifier, format::FormatSet},
@@ -46,7 +45,7 @@ use smithay::{
     },
     utils::{Physical, Size},
 };
-use std::sync::Mutex;
+use std::{sync::Mutex, time::Instant};
 
 /// What a capture source captures.
 #[derive(Clone, PartialEq)]
@@ -82,6 +81,9 @@ pub struct ImageCapture {
     frames: Vec<Waiting>,
     /// Captured windows' frame callbacks.
     pacers: Vec<(Source, RegistrationToken)>,
+    /// Set to draw again when a frame waiting for a change has waited
+    /// long enough (STILL_FRAME).
+    nudge: Option<RegistrationToken>,
 }
 
 /// The GPU wayluck draws with, and the modifiers it can draw XRGB8888
@@ -120,6 +122,8 @@ struct Waiting {
     frame: ExtImageCopyCaptureFrameV1,
     session: ExtImageCopyCaptureSessionV1,
     buffer: WlBuffer,
+    /// When it was asked for.
+    asked: Instant,
 }
 
 impl Wayluck {
