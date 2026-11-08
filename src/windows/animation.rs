@@ -1,67 +1,50 @@
 //! Windows drawn moving: from where they were drawn (or where the window
 //! manager says they start) to where it placed them, over a while, along a
-//! cubic bézier curve (as CSS's cubic-bezier(): from (0, 0) to (1, 1), time
-//! across, progress up). Its client draws at the new size at once; what it
-//! draws is stretched to the rectangle it's drawn in meanwhile.
+//! curve (how far along at each time, as the window manager sampled it).
+//! Its client draws at the new size at once; what it draws is stretched to
+//! the rectangle it's drawn in meanwhile.
 
 use crate::render::rounded::ClipIds;
 use smithay::utils::{Logical, Rectangle};
 use std::time::{Duration, Instant};
 
-/// A timing curve: its two control points.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Curve {
-    x1: f64,
-    y1: f64,
-    x2: f64,
-    y2: f64,
-}
+/// A timing curve: how far along at evenly spaced times from the start
+/// (0) to the end (1), at least two. Between them, it's straight.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Curve(Vec<f32>);
 
 impl Curve {
-    /// None if it isn't one: x1 and x2 are times, between 0 and 1 (so
-    /// there's one progress for each time). Progress may go past 0 or 1
-    /// (overshooting, bouncing back).
-    pub fn new(x1: f64, y1: f64, x2: f64, y2: f64) -> Option<Self> {
-        let times = (0.0..=1.0).contains(&x1) && (0.0..=1.0).contains(&x2);
-        (times && y1.is_finite() && y2.is_finite()).then_some(Curve { x1, y1, x2, y2 })
+    /// Longest curve taken: finer is no smoother on screen.
+    const MOST: usize = 1024;
+
+    /// None if it isn't one: fewer than two values, more than MOST, or one
+    /// that isn't a number. Progress may go past 0 or 1 (overshooting,
+    /// bouncing back), and needn't start at 0 or end at 1.
+    pub fn new(samples: Vec<f32>) -> Option<Self> {
+        let fine =
+            (2..=Self::MOST).contains(&samples.len()) && samples.iter().all(|v| v.is_finite());
+        fine.then_some(Curve(samples))
     }
 
-    /// How far along it is (0 at the start, 1 at the end) when time t (0
-    /// to 1) of the whole has passed.
+    /// How far along it is when time t (0 to 1) of the whole has passed:
+    /// 1 at the end, whatever the curve says then.
     pub fn at(&self, t: f64) -> f64 {
-        if t <= 0.0 {
-            return 0.0;
-        }
         if t >= 1.0 {
             return 1.0;
         }
-        // The point on the curve whose time is t: time only grows along
-        // it, so halving finds it.
-        let (mut low, mut high) = (0.0, 1.0);
-        for _ in 0..40 {
-            let s = (low + high) / 2.0;
-            if bezier(self.x1, self.x2, s) < t {
-                low = s;
-            } else {
-                high = s;
-            }
-        }
-        bezier(self.y1, self.y2, (low + high) / 2.0)
+        let last = (self.0.len() - 1) as f64;
+        let at = t.max(0.0) * last;
+        let i = (at.floor() as usize).min(self.0.len() - 2);
+        let (a, b) = (self.0[i] as f64, self.0[i + 1] as f64);
+        a + (b - a) * (at - i as f64)
     }
 }
 
 /// How windows move, as the window manager set it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Setting {
     pub duration: Duration,
     pub curve: Curve,
-}
-
-/// One coordinate of a cubic bézier from 0 to 1, with control points' p1
-/// and p2, at s (0 to 1 along it).
-fn bezier(p1: f64, p2: f64, s: f64) -> f64 {
-    let r = 1.0 - s;
-    3.0 * r * r * s * p1 + 3.0 * r * s * s * p2 + s * s * s
 }
 
 /// A window on its way: from a rectangle to another (in its scene).
@@ -103,33 +86,32 @@ impl Animation {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_curve_starts_at_0_and_ends_at_1() {
-        let ease = Curve::new(0.25, 0.1, 0.25, 1.0).unwrap();
-        assert_eq!(ease.at(0.0), 0.0);
-        assert_eq!(ease.at(1.0), 1.0);
+    fn linear() -> Curve {
+        Curve::new(vec![0.0, 1.0]).unwrap()
     }
 
     #[test]
-    fn a_straight_curve_is_time_itself() {
-        let linear = Curve::new(0.0, 0.0, 1.0, 1.0).unwrap();
-        for t in [0.1, 0.25, 0.5, 0.9] {
-            assert!((linear.at(t) - t).abs() < 1e-6, "{t}: {}", linear.at(t));
-        }
+    fn a_curve_goes_straight_between_its_samples() {
+        let curve = Curve::new(vec![0.0, 0.5, 0.75, 1.0]).unwrap();
+        assert_eq!(curve.at(0.0), 0.0);
+        assert!((curve.at(1.0 / 6.0) - 0.25).abs() < 1e-6);
+        assert!((curve.at(0.5) - 0.625).abs() < 1e-6);
+        assert_eq!(curve.at(1.0), 1.0);
     }
 
     #[test]
-    fn css_ease_is_four_fifths_there_halfway() {
-        // cubic-bezier(0.25, 0.1, 0.25, 1) at half the time: 0.8024.
-        let ease = Curve::new(0.25, 0.1, 0.25, 1.0).unwrap();
-        assert!((ease.at(0.5) - 0.8024).abs() < 1e-3, "{}", ease.at(0.5));
+    fn a_curve_may_overshoot() {
+        let curve = Curve::new(vec![0.0, 1.2, 1.0]).unwrap();
+        assert!((curve.at(0.5) - 1.2).abs() < 1e-6);
     }
 
     #[test]
-    fn a_curve_may_overshoot_but_its_time_may_not() {
-        assert!(Curve::new(0.3, 1.6, 0.6, 1.0).is_some());
-        assert!(Curve::new(1.2, 0.0, 0.5, 1.0).is_none());
-        assert!(Curve::new(0.5, 0.0, -0.1, 1.0).is_none());
+    fn a_curve_needs_two_numbers_and_no_more_than_it_takes() {
+        assert!(Curve::new(vec![0.5]).is_none());
+        assert!(Curve::new(vec![0.0, f32::NAN]).is_none());
+        assert!(Curve::new(vec![0.0, f32::INFINITY]).is_none());
+        assert!(Curve::new(vec![0.0; 1025]).is_none());
+        assert!(Curve::new(vec![0.0; 1024]).is_some());
     }
 
     #[test]
@@ -140,7 +122,7 @@ mod tests {
             to: Rectangle::new((200, 100).into(), (300, 100).into()),
             start,
             duration: Duration::from_secs(1),
-            curve: Curve::new(0.0, 0.0, 1.0, 1.0).unwrap(),
+            curve: linear(),
             ids: ClipIds::new(),
         };
         let half = animation.at(start + Duration::from_millis(500)).unwrap();

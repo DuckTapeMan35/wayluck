@@ -163,7 +163,9 @@ impl Windows {
 
     /// How window id moves; None: it doesn't.
     fn animation_for(&self, id: WindowId) -> Option<Setting> {
-        let setting = self.animation_of.get(&id).copied().or(self.animation)?;
+        let setting = (self.animation_of.get(&id))
+            .or(self.animation.as_ref())?
+            .clone();
         (!setting.duration.is_zero()).then_some(setting)
     }
 

@@ -164,21 +164,18 @@ impl Wm {
         self.conn.flush().unwrap();
     }
 
-    /// How windows move: over duration milliseconds, along curve (x1, y1,
-    /// x2, y2).
-    pub fn set_animation(&self, duration: u32, curve: [f64; 4]) {
-        let [x1, y1, x2, y2] = curve;
-        self.manager.set_animation(duration, x1, y1, x2, y2);
+    /// How windows move: over duration milliseconds, along curve (how far
+    /// along at evenly spaced times).
+    pub fn set_animation(&self, duration: u32, curve: &[f32]) {
+        self.manager.set_animation(duration, floats(curve));
         self.conn.flush().unwrap();
     }
 
     /// How window id moves, whatever all windows do (None: as they do).
-    pub fn set_window_animation(&self, id: u32, animation: Option<(u32, [f64; 4])>) {
+    pub fn set_window_animation(&self, id: u32, animation: Option<(u32, &[f32])>) {
         let window = self.proxy(id);
         match animation {
-            Some((duration, [x1, y1, x2, y2])) => {
-                window.set_animation(duration, x1, y1, x2, y2);
-            }
+            Some((duration, curve)) => window.set_animation(duration, floats(curve)),
             None => window.unset_animation(),
         }
         self.conn.flush().unwrap();
@@ -198,10 +195,28 @@ impl Wm {
         let tx = self.manager.transaction(&self.qh, ());
         tx.place(&self.scene, &window, x, y, w, h);
         if instant {
-            tx.instant();
+            tx.instant(Some(&window));
         }
         if let Some((x, y, w, h)) = start_from {
             tx.start_from(&window, x, y, w, h);
+        }
+        tx.commit();
+        self.conn.flush().unwrap();
+    }
+
+    /// Place windows together, each (id, rect, instantly), in one
+    /// transaction; all instantly if all_instant.
+    pub fn place_together(&self, windows: &[Placing], all_instant: bool) {
+        let tx = self.manager.transaction(&self.qh, ());
+        for &(id, (x, y, w, h), instant) in windows {
+            let window = self.proxy(id);
+            tx.place(&self.scene, &window, x, y, w, h);
+            if instant {
+                tx.instant(Some(&window));
+            }
+        }
+        if all_instant {
+            tx.instant(None);
         }
         tx.commit();
         self.conn.flush().unwrap();
@@ -231,6 +246,16 @@ impl Wm {
             .expect("no such window");
         proxy.clone()
     }
+}
+
+/// A window to place: its id, where (x, y, width, height), and whether
+/// instantly.
+pub type Placing = (u32, (i32, i32, i32, i32), bool);
+
+/// A curve's values as the protocol carries them: 32-bit floats in the
+/// machine's byte order.
+fn floats(curve: &[f32]) -> Vec<u8> {
+    curve.iter().flat_map(|v| v.to_ne_bytes()).collect()
 }
 
 struct Client {

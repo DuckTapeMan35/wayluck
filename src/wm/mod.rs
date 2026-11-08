@@ -226,14 +226,8 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
                     state.wm.pointer_grabbed = false;
                 }
             }
-            wayluck_wm_manager_v1::Request::SetAnimation {
-                duration,
-                x1,
-                y1,
-                x2,
-                y2,
-            } => {
-                let Some(setting) = animation(manager, duration, [x1, y1, x2, y2]) else {
+            wayluck_wm_manager_v1::Request::SetAnimation { duration, curve } => {
+                let Some(setting) = animation(manager, duration, &curve) else {
                     return;
                 };
                 if state.wm.manager.as_ref() == Some(manager) {
@@ -258,17 +252,21 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
 }
 
 /// How windows move, as the window manager asks (duration in
-/// milliseconds, the curve's x1, y1, x2, y2); None if the curve isn't one:
-/// manager's error.
+/// milliseconds, the curve as an array of 32-bit floats); None if the curve
+/// isn't one: manager's error.
 pub(super) fn animation(
     manager: &WayluckWmManagerV1,
     duration: u32,
-    [x1, y1, x2, y2]: [f64; 4],
+    curve: &[u8],
 ) -> Option<Setting> {
-    let Some(curve) = Curve::new(x1, y1, x2, y2) else {
+    let samples = curve
+        .chunks_exact(4)
+        .map(|f| f32::from_ne_bytes([f[0], f[1], f[2], f[3]]));
+    let curve = Curve::new(samples.collect()).filter(|_| curve.len().is_multiple_of(4));
+    let Some(curve) = curve else {
         manager.post_error(
             wayluck_wm_manager_v1::Error::InvalidCurve,
-            "set_animation: the curve's x1 or x2 isn't between 0 and 1",
+            "set_animation: the curve isn't 2 to 1024 floats, all numbers",
         );
         return None;
     };

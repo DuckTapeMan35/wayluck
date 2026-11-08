@@ -190,27 +190,27 @@
         the transaction says where it starts (start_from). A duration of 0:
         no animation, as before this is set.
 
-        How far along it is follows a cubic bézier curve from (0, 0) to
-        (1, 1), time across and progress up, with control points (x1, y1)
-        and (x2, y2), as CSS's cubic-bezier(): x1 and x2 must be between 0
-        and 1 (invalid_curve otherwise); y1 and y2 may be anything
-        (progress may overshoot). Its client is asked for the new size at
-        once; what it draws is stretched to the rectangle it's drawn in
-        meanwhile. Placed again on its way, it goes from where it's drawn
-        then.
+        How far along it is (0: where it starts, 1: where it's placed)
+        follows curve: an array of 32-bit floats in the machine's byte
+        order, how far along at evenly spaced times from the start to the
+        end, 2 to 1024 of them (invalid_curve otherwise), straight between
+        them. They may go past 0 or 1 (overshooting). At the end it's
+        where it's placed, whatever the last one says. Its client is asked
+        for the new size at once; what it draws is stretched to the
+        rectangle it's drawn in meanwhile.
+
+        Placed again where it's going, it keeps going; placed somewhere
+        else on its way, it goes there from where it's drawn then.
       </description>
       <arg name="duration" type="uint" summary="milliseconds"/>
-      <arg name="x1" type="fixed"/>
-      <arg name="y1" type="fixed"/>
-      <arg name="x2" type="fixed"/>
-      <arg name="y2" type="fixed"/>
+      <arg name="curve" type="array" summary="32-bit floats"/>
     </request>
 
     <enum name="error">
       <entry name="not_own_toplevel" value="0"
         summary="own_window's surface isn't a toplevel of the window manager's"/>
       <entry name="invalid_curve" value="1"
-        summary="an animation's curve has x1 or x2 outside 0 to 1"/>
+        summary="an animation's curve isn't 2 to 1024 floats, all numbers"/>
     </enum>
 
     <request name="own_window">
@@ -389,10 +389,7 @@
         invalid_curve error.
       </description>
       <arg name="duration" type="uint" summary="milliseconds"/>
-      <arg name="x1" type="fixed"/>
-      <arg name="y1" type="fixed"/>
-      <arg name="x2" type="fixed"/>
-      <arg name="y2" type="fixed"/>
+      <arg name="curve" type="array" summary="32-bit floats"/>
     </request>
 
     <request name="unset_animation">
@@ -640,11 +637,13 @@
     </request>
 
     <request name="instant">
-      <description summary="nothing in this transaction is animated">
-        Windows it places are drawn where they're placed at once (a
-        window on its way stops there): for a window dragged, say, placed
-        again and again as the pointer moves.
+      <description summary="a window this transaction places isn't animated">
+        The window (null: every window this transaction places) is drawn
+        where it's placed at once, and one on its way stops there: for a
+        window dragged, say, placed again and again as the pointer moves,
+        while windows making room for it are animated.
       </description>
+      <arg name="window" type="object" interface="wayluck_wm_window_v1" allow-null="true"/>
     </request>
 
     <request name="start_from">

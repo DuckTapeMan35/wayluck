@@ -190,17 +190,11 @@ impl Dispatch<WayluckWmWindowV1, WindowId> for Wayluck {
                 }
             }
             // The manager's error, if the curve isn't one.
-            wayluck_wm_window_v1::Request::SetAnimation {
-                duration,
-                x1,
-                y1,
-                x2,
-                y2,
-            } => {
+            wayluck_wm_window_v1::Request::SetAnimation { duration, curve } => {
                 let Some(manager) = state.wm.manager.clone() else {
                     return;
                 };
-                if let Some(setting) = super::animation(&manager, duration, [x1, y1, x2, y2]) {
+                if let Some(setting) = super::animation(&manager, duration, &curve) {
                     state.windows.set_animation(Some(*id), Some(setting));
                 }
             }

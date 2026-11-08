@@ -14,7 +14,7 @@ use harness::{
 use std::time::{Duration, Instant};
 
 /// A straight curve: progress is time.
-const LINEAR: [f64; 4] = [0.0, 0.0, 1.0, 1.0];
+const LINEAR: &[f32] = &[0.0, 1.0];
 
 /// Somewhere else in the scene than PLACE, as big.
 const ELSEWHERE: (i32, i32, i32, i32) = (500, 300, 400, 300);
@@ -84,7 +84,7 @@ fn session_window(session: &mut Session) -> i32 {
 }
 
 #[test]
-fn an_instant_transaction_isnt_animated() {
+fn an_instant_window_goes_straight_there() {
     let mut session = Session::start();
     let (wm, _window, id) = placed_window(&mut session);
     wm.set_animation(60_000, LINEAR);
@@ -260,4 +260,57 @@ fn frames_are_drawn_while_a_window_moves_and_then_no_more() {
         there,
         "frames drawn with nothing moving"
     );
+}
+
+#[test]
+fn placed_again_where_its_going_it_keeps_going() {
+    let mut session = Session::start();
+    let (wm, _window, id) = placed_window(&mut session);
+    wm.set_animation(1000, LINEAR);
+    let asked = Instant::now();
+    wm.place(id, ELSEWHERE, false, None);
+    wait_for(|| animating(&mut session, "victim"), "it to move");
+    // As a window manager sending everything, every time: halfway there,
+    // placed there again.
+    std::thread::sleep(Duration::from_millis(500).saturating_sub(asked.elapsed()));
+    wm.place(id, ELSEWHERE, false, None);
+    // It gets there when it was going to, not a whole animation later.
+    std::thread::sleep(Duration::from_millis(1250).saturating_sub(asked.elapsed()));
+    assert_eq!(animating(&mut session, "victim"), None, "started over");
+}
+
+#[test]
+fn an_instant_window_isnt_animated_while_others_are() {
+    let mut session = Session::start();
+    let (wm, _window, id) = placed_window(&mut session);
+    let _x = XWindow::open(&session.x_display, "xwin", "XWin", (200, 200));
+    let other = wm.window("xwin").id;
+    session.window("xwin");
+    wm.set_animation(60_000, LINEAR);
+    // Dragged, while the other makes room.
+    wm.place_together(
+        &[(id, ELSEWHERE, true), (other, (100, 450, 400, 300), false)],
+        false,
+    );
+    wait_for(|| animating(&mut session, "xwin"), "the other to move");
+    assert_eq!(animating(&mut session, "victim"), None);
+}
+
+#[test]
+fn an_instant_transaction_animates_nothing() {
+    let mut session = Session::start();
+    let (wm, _window, id) = placed_window(&mut session);
+    let _x = XWindow::open(&session.x_display, "xwin", "XWin", (200, 200));
+    let other = wm.window("xwin").id;
+    session.window("xwin");
+    wm.set_animation(60_000, LINEAR);
+    wm.place_together(
+        &[(id, ELSEWHERE, false), (other, (100, 450, 400, 300), false)],
+        true,
+    );
+    wait_for(
+        || (session_window(&mut session) == ELSEWHERE.0).then_some(()),
+        "it to be placed",
+    );
+    assert_eq!(session.command("animating"), "");
 }

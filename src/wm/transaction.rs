@@ -126,7 +126,7 @@ impl Dispatch<WayluckWmTransactionV1, Transaction> for Wayluck {
                 Some(Change::Fullscreen(id_of(&window), fullscreen != 0))
             }
             Request::Hide { window } => Some(Change::Hide(id_of(&window))),
-            Request::Instant => Some(Change::Instant),
+            Request::Instant { window } => Some(Change::Instant(window.as_ref().map(id_of))),
             Request::StartFrom {
                 window,
                 x,

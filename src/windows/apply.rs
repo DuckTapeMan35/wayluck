@@ -39,8 +39,8 @@ pub enum Change {
     Outlines(SceneId),
     /// Draw an outline on a scene.
     Outline(SceneId, Outline),
-    /// Nothing these changes place is animated.
-    Instant,
+    /// A window these changes place isn't animated (None: none is).
+    Instant(Option<WindowId>),
     /// Where a window placed in the same changes is drawn moving from (in
     /// its scene), if it's animated.
     StartFrom(WindowId, Rectangle<i32, Logical>),
@@ -75,11 +75,12 @@ impl Wayluck {
                 | Change::Border(id, ..)
                 | Change::Fullscreen(id, _)
                 | Change::StartFrom(id, _)
+                | Change::Instant(Some(id))
                 | Change::Tiled(id, _) => *id,
                 Change::Focus(None)
                 | Change::Show(..)
                 | Change::SceneSize(..)
-                | Change::Instant
+                | Change::Instant(None)
                 | Change::Outline(..)
                 | Change::Outlines(_) => continue,
             };
@@ -154,7 +155,7 @@ impl Wayluck {
                 | Change::Outline(..)
                 | Change::Border(..)
                 | Change::Show(..)
-                | Change::Instant
+                | Change::Instant(_)
                 | Change::StartFrom(..)
                 | Change::SceneSize(..) => {}
             }
@@ -210,7 +211,11 @@ impl Wayluck {
         // Where things are first: focus and borders then apply to windows
         // where they are now.
         let now = Instant::now();
-        let instant = changes.iter().any(|c| matches!(c, Change::Instant));
+        let instant = |id: WindowId| {
+            let instant =
+                |c: &Change| matches!(*c, Change::Instant(w) if w.is_none_or(|w| w == id));
+            changes.iter().any(instant)
+        };
         let starts: HashMap<_, _> = (changes.iter())
             .filter_map(|c| match *c {
                 Change::StartFrom(id, from) => Some((id, from)),
@@ -221,11 +226,19 @@ impl Wayluck {
             match *change {
                 Change::Place(scene, id, rect) => {
                     if self.windows.get(id).is_some() {
+                        // Placed again where it's going: it keeps going.
+                        let going = (self.windows.animations.get(&id))
+                            .is_some_and(|a| a.to == rect && a.at(now).is_some());
+                        let same_scene =
+                            matches!(self.windows.placed.get(&id), Some((s, _)) if *s == scene);
+                        if going && same_scene && !starts.contains_key(&id) && !instant(id) {
+                            continue;
+                        }
                         let from = starts.get(&id).copied().or(self.drawn_in(id, scene, now));
                         self.scenes.place(scene, id, rect.loc);
                         self.windows.placed.insert(id, (scene, rect));
                         self.windows.animations.remove(&id);
-                        let setting = self.windows.animation_for(id).filter(|_| !instant);
+                        let setting = self.windows.animation_for(id).filter(|_| !instant(id));
                         if let (Some(from), Some(setting)) = (from, setting)
                             && from != rect
                         {
@@ -283,7 +296,7 @@ impl Wayluck {
                 | Change::Show(..)
                 | Change::SceneSize(..)
                 | Change::Tiled(..)
-                | Change::Instant
+                | Change::Instant(_)
                 | Change::StartFrom(..) => {} // told already
             }
         }
