@@ -13,7 +13,7 @@ mod xdg_shell;
 use crate::{
     Wayluck,
     capture::image_capture,
-    render::{Border, rounded::ClipIds},
+    render::{Border, rounded::ClipIds, shadow::Shadow},
     wm::scenes::{self, SceneId},
 };
 pub use animation::{Curve, Setting};
@@ -60,6 +60,8 @@ pub struct Windows {
     by_id: HashMap<WindowId, Window>,
     /// The borders the window manager gave windows.
     borders: HashMap<WindowId, Border>,
+    /// The shadows it gave them.
+    shadows: HashMap<WindowId, Shadow>,
     /// Windows the window manager has placed or hidden at least once: their
     /// first configure can carry what it decided.
     decided: HashSet<WindowId>,
@@ -123,6 +125,7 @@ impl Windows {
         self.fullscreen.remove(&id);
         self.owned.remove(&id);
         self.borders.remove(&id);
+        self.shadows.remove(&id);
         self.decided.remove(&id);
         self.waiting.remove(&id);
         self.animations.remove(&id);
@@ -217,6 +220,10 @@ impl Windows {
 
     pub fn border_mut(&mut self, id: WindowId) -> Option<&mut Border> {
         self.borders.get_mut(&id)
+    }
+
+    pub fn shadow_mut(&mut self, id: WindowId) -> Option<&mut Shadow> {
+        self.shadows.get_mut(&id)
     }
 
     pub fn len(&self) -> usize {

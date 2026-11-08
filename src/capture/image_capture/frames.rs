@@ -5,7 +5,7 @@ use super::{FrameData, Source, Waiting, sessions::send_constraints};
 use crate::{
     Wayluck,
     capture::screencopy,
-    render::rounded::AsGles,
+    render::shaders::AsGles,
     render::{self, Element},
 };
 use smithay::{

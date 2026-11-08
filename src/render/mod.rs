@@ -3,11 +3,14 @@
 pub mod cursor;
 pub mod resized;
 pub mod rounded;
+pub mod shaders;
+pub mod shadow;
 pub mod text;
 
 use crate::{Wayluck, layers::Side, wm::scenes::Scene};
 use resized::Resized;
-use rounded::{AsGles, BorderElement, ClipIds, ClippedSurface, Shaders};
+use rounded::{ClipIds, ClippedSurface};
+use shaders::{AsGles, ShaderElement, Shaders};
 use smithay::{
     backend::renderer::{
         Color32F, ImportAll, ImportMem, Renderer, Texture,
@@ -39,7 +42,7 @@ render_elements! {
     pub Element<R> where R: ImportAll + ImportMem + AsGles;
     Surface = WaylandSurfaceRenderElement<R>,
     Clipped = ClippedSurface<R>,
-    Border = BorderElement,
+    Shader = ShaderElement,
     Memory = MemoryRenderBufferRenderElement<R>,
     Solid = SolidColorRenderElement,
     Resized = resized::Resized<R>,
@@ -172,12 +175,23 @@ where
             drawn = Resized::many(drawn, (origin, by), Point::default(), whole, scale, ids);
         }
         elements.extend(drawn);
+        let content = Rectangle::new(at, drawn_size);
+        let mut around = (content, radius);
         if let Some(border) = state.windows.border_mut(id) {
-            let content = Rectangle::new(at, drawn_size);
+            around = border.outer(content);
             elements.extend(
                 border
                     .element(renderer, content, Point::default())
-                    .map(Element::Border),
+                    .map(Element::Shader),
+            );
+        }
+        // Its shadow behind both.
+        if let Some(shadow) = state.windows.shadow_mut(id) {
+            let (around, radius) = around;
+            elements.extend(
+                shadow
+                    .element(renderer, around, radius, Point::default())
+                    .map(Element::Shader),
             );
         }
     }
@@ -311,7 +325,7 @@ fn outline_elements<R: AsGles>(renderer: &mut R, scene: &mut Scene) -> Vec<Eleme
         }
     }
     (elements.into_iter().rev())
-        .map(|shader| Element::Border(BorderElement(shader)))
+        .map(|shader| Element::Shader(ShaderElement(shader)))
         .collect()
 }
 
@@ -425,6 +439,22 @@ impl Border {
         }
     }
 
+    /// What it and the window inside it cover: content grown by its width,
+    /// and how round that's corners are.
+    pub fn outer(&self, content: Rectangle<i32, Logical>) -> (Rectangle<i32, Logical>, u32) {
+        let w = self.width.max(0);
+        let radius = if self.radius > 0 {
+            self.radius + w as u32
+        } else {
+            0
+        };
+        let size = (content.size.w + 2 * w, content.size.h + 2 * w);
+        (
+            Rectangle::new(content.loc - Point::from((w, w)), size.into()),
+            radius,
+        )
+    }
+
     /// It around content (in global coordinates), on an output whose top
     /// left is origin; None if it has no width (or can't be drawn).
     fn element<R: AsGles>(
@@ -432,7 +462,7 @@ impl Border {
         renderer: &mut R,
         content: Rectangle<i32, Logical>,
         origin: Point<i32, Logical>,
-    ) -> Option<BorderElement> {
+    ) -> Option<ShaderElement> {
         if self.width <= 0 {
             return None;
         }
@@ -458,7 +488,7 @@ impl Border {
             }
         }
         self.changed = false;
-        self.shader.clone().map(BorderElement)
+        self.shader.clone().map(ShaderElement)
     }
 }
 

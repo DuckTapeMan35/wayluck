@@ -238,6 +238,15 @@ impl Wm {
         self.conn.flush().unwrap();
     }
 
+    /// Give window id a shadow: blurred blur pixels, spread, moved by x, y,
+    /// in color (0xAARRGGBB).
+    pub fn shadow(&self, id: u32, blur: u32, spread: i32, (x, y): (i32, i32), color: u32) {
+        let tx = self.manager.transaction(&self.qh, ());
+        tx.shadow(&self.proxy(id), blur, spread, x, y, color);
+        tx.commit();
+        self.conn.flush().unwrap();
+    }
+
     fn proxy(&self, id: u32) -> WayluckWmWindowV1 {
         let windows = self.windows.lock().unwrap();
         let (proxy, _) = windows

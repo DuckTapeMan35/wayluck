@@ -4,7 +4,11 @@
 use super::{WindowId, animation::Animation};
 use crate::{
     Wayluck,
-    render::{Border, rounded::Outline},
+    render::{
+        Border,
+        rounded::Outline,
+        shadow::{Shadow, Spec},
+    },
     wm::protocol::wayluck_wm_transaction_v1::WayluckWmTransactionV1,
     wm::scenes::SceneId,
 };
@@ -44,6 +48,8 @@ pub enum Change {
     /// Where a window placed in the same changes is drawn moving from (in
     /// its scene), if it's animated.
     StartFrom(WindowId, Rectangle<i32, Logical>),
+    /// Draw a shadow below a window.
+    Shadow(WindowId, Spec),
 }
 
 impl Wayluck {
@@ -73,6 +79,7 @@ impl Wayluck {
                 | Change::Hide(id)
                 | Change::Focus(Some(id))
                 | Change::Border(id, ..)
+                | Change::Shadow(id, _)
                 | Change::Fullscreen(id, _)
                 | Change::StartFrom(id, _)
                 | Change::Instant(Some(id))
@@ -154,6 +161,7 @@ impl Wayluck {
                 | Change::Outlines(_)
                 | Change::Outline(..)
                 | Change::Border(..)
+                | Change::Shadow(..)
                 | Change::Show(..)
                 | Change::Instant(_)
                 | Change::StartFrom(..)
@@ -282,6 +290,15 @@ impl Wayluck {
                             .entry(id)
                             .and_modify(|b| b.set(width, colors, radius))
                             .or_insert_with(|| Border::new(width, colors, radius));
+                    }
+                }
+                Change::Shadow(id, spec) => {
+                    if self.windows.get(id).is_some() {
+                        self.windows
+                            .shadows
+                            .entry(id)
+                            .and_modify(|s| s.set(spec))
+                            .or_insert_with(|| Shadow::new(spec));
                     }
                 }
                 Change::Fullscreen(id, on) => {

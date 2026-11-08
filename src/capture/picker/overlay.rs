@@ -6,10 +6,7 @@
 use crate::{
     Wayluck,
     render::{
-        self, Element, argb,
-        resized::Resized,
-        rounded::{AsGles, ClipIds},
-        text::Text,
+        self, Element, argb, resized::Resized, rounded::ClipIds, shaders::AsGles, text::Text,
     },
     windows::{self, WindowId},
     wm::scenes::{Scene, SceneId},

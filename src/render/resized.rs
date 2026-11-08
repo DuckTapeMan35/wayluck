@@ -5,10 +5,7 @@
 //! places at once (a window, and the monitor it's on), and the damage
 //! tracker tells elements apart by id.
 
-use super::{
-    Element,
-    rounded::{AsGles, ClipIds},
-};
+use super::{Element, rounded::ClipIds, shaders::AsGles};
 use smithay::{
     backend::renderer::{
         ImportAll, ImportMem, Renderer,

@@ -11,7 +11,7 @@ use super::{
 };
 use crate::{
     Wayluck,
-    render::{argb, rounded::Outline},
+    render::{argb, rounded::Outline, shadow::Spec},
     windows::Change,
 };
 use smithay::{
@@ -92,6 +92,22 @@ impl Dispatch<WayluckWmTransactionV1, Transaction> for Wayluck {
                 width,
                 [top, right, bottom, left],
                 radius,
+            )),
+            Request::Shadow {
+                window,
+                blur,
+                spread,
+                x,
+                y,
+                color,
+            } => Some(Change::Shadow(
+                id_of(&window),
+                Spec {
+                    blur,
+                    spread,
+                    offset: (x, y).into(),
+                    color,
+                },
             )),
             Request::Tiled { window, edges } => Some(Change::Tiled(id_of(&window), edges)),
             Request::Outlines { scene } => Some(Change::Outlines(scene_of(&scene))),
