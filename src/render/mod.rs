@@ -1,5 +1,6 @@
 //! Drawing a frame, whatever the backend: nested (winit) or on hardware (DRM).
 
+pub mod blur;
 pub mod cursor;
 pub mod resized;
 pub mod rounded;
@@ -7,7 +8,7 @@ pub mod shaders;
 pub mod shadow;
 pub mod text;
 
-use crate::{Wayluck, layers::Side, wm::scenes::Scene};
+use crate::{Wayluck, layers::Side, surfaces::background_effect::blur_region, wm::scenes::Scene};
 use resized::Resized;
 use rounded::{ClipIds, ClippedSurface};
 use shaders::{AsGles, ShaderElement, Shaders};
@@ -46,6 +47,7 @@ render_elements! {
     Memory = MemoryRenderBufferRenderElement<R>,
     Solid = SolidColorRenderElement,
     Resized = resized::Resized<R>,
+    Blur = blur::BlurElement,
 }
 
 /// Draw output into a framebuffer (nested: the window's), over the clear
@@ -148,10 +150,14 @@ where
         .unwrap_or_default();
     let now = Instant::now();
     let whole = Rectangle::from_size(area.size.to_physical_precise_round(scale));
+    // Windows blurred behind: where in elements what's below each starts,
+    // and where it is, top window first.
+    let mut blurred = Vec::new();
     for (id, at) in shown {
         let Some(window) = state.windows.get(id).cloned() else {
             continue;
         };
+
         // On its way somewhere: drawn where it is now, stretched to that
         // size (whatever size its client drew).
         let size = window.geometry().size;
@@ -175,7 +181,33 @@ where
             drawn = Resized::many(drawn, (origin, by), Point::default(), whole, scale, ids);
         }
         elements.extend(drawn);
+
         let content = Rectangle::new(at, drawn_size);
+        let part = match state.windows.blur_mode(id) {
+            blur::Mode::On => Some(blur::Part::Whole),
+            blur::Mode::Off => None,
+            // Where it asks, stretched with it if it's on its way somewhere.
+            blur::Mode::Client => blur_region(&window).filter(|r| !r.is_empty()).map(|rects| {
+                let (sx, sy) = (
+                    drawn_size.w as f64 / size.w.max(1) as f64,
+                    drawn_size.h as f64 / size.h.max(1) as f64,
+                );
+                let rects = (rects.into_iter())
+                    .map(|r| {
+                        r.to_f64()
+                            .upscale((sx, sy))
+                            .to_physical(scale)
+                            .to_i32_round()
+                    })
+                    .collect();
+                blur::Part::Only(rects)
+            }),
+        };
+        if let Some(part) = part {
+            let window = content.to_physical_precise_round(scale);
+            blurred.push((elements.len(), id, window, part, radius as f64 * scale.x));
+        }
+
         let mut around = (content, radius);
         if let Some(border) = state.windows.border_mut(id) {
             around = border.outer(content);
@@ -205,6 +237,26 @@ where
     let below = state.layers(output, Side::Below);
     if let Some(from) = &layers_from {
         elements.extend(layer_elements(from, renderer, scale, below));
+    }
+
+    // Each blurred window's blur, behind it: the lowest first, so a window
+    // above it blurs it too.
+    let strength = state.windows.blur;
+    for (at, id, window, part, radius) in blurred.into_iter().rev() {
+        let behind = state.windows.behind_mut(id);
+        let blur = behind.element(
+            renderer,
+            &elements[at..],
+            window,
+            part,
+            whole.size,
+            radius,
+            strength,
+            scale,
+        );
+        if let Some(blur) = blur {
+            elements.insert(at, Element::Blur(blur));
+        }
     }
 
     elements

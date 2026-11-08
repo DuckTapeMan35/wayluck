@@ -247,6 +247,20 @@ impl Wm {
         self.conn.flush().unwrap();
     }
 
+    /// Blur behind window id: 0 where its client asks, 1 nowhere, 2 behind all of it.
+    pub fn blur(&self, id: u32, mode: u32) {
+        let tx = self.manager.transaction(&self.qh, ());
+        tx.blur(&self.proxy(id), mode.try_into().unwrap());
+        tx.commit();
+        self.conn.flush().unwrap();
+    }
+
+    /// How strongly windows are blurred behind.
+    pub fn set_blur(&self, passes: u32, offset: f64) {
+        self.manager.set_blur(passes, offset);
+        self.conn.flush().unwrap();
+    }
+
     fn proxy(&self, id: u32) -> WayluckWmWindowV1 {
         let windows = self.windows.lock().unwrap();
         let (proxy, _) = windows

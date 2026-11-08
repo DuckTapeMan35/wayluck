@@ -4,6 +4,7 @@
 
 use super::{Session, wait_for};
 use std::{
+    cell::OnceCell,
     io::{Read, Write},
     os::{fd::AsFd, unix::net::UnixStream},
     sync::{
@@ -27,6 +28,7 @@ use wayland_client::{
         wl_keyboard::WlKeyboard,
         wl_pointer,
         wl_pointer::WlPointer,
+        wl_region::WlRegion,
         wl_registry::WlRegistry,
         wl_seat,
         wl_seat::WlSeat,
@@ -35,6 +37,10 @@ use wayland_client::{
         wl_shm_pool::WlShmPool,
         wl_surface::WlSurface,
     },
+};
+use wayland_protocols::ext::background_effect::v1::client::{
+    ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1,
+    ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1,
 };
 use wayland_protocols::xdg::shell::client::{
     xdg_surface::{self, XdgSurface},
@@ -64,6 +70,12 @@ pub struct Window {
     clip: Arc<Mutex<Clip>>,
     manager: WlDataDeviceManager,
     device: WlDataDevice,
+    compositor: WlCompositor,
+    surface: WlSurface,
+    /// Asking for what's behind it blurred: the global, and its object
+    /// once it asks.
+    effects: Option<ExtBackgroundEffectManagerV1>,
+    effect: OnceCell<ExtBackgroundEffectSurfaceV1>,
 }
 
 /// The window's side of the clipboard.
@@ -86,8 +98,13 @@ struct Clip {
 const TEXT: &str = "text/plain;charset=utf-8";
 
 impl Window {
-    /// A window of session's, filled with argb (0xAARRGGBB), mapped.
+    /// A window of session's ("victim"), filled with argb (0xAARRGGBB), mapped.
     pub fn open(session: &Session, argb: u32) -> Window {
+        Self::titled(session, argb, "victim")
+    }
+
+    /// A window of session's, filled with argb (0xAARRGGBB), mapped.
+    pub fn titled(session: &Session, argb: u32, title: &str) -> Window {
         let stream = UnixStream::connect(session.dir().join(&session.wayland_display)).unwrap();
         let conn = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
@@ -98,10 +115,11 @@ impl Window {
         let seat: WlSeat = globals.bind(&qh, 5..=9, ()).unwrap();
         let manager: WlDataDeviceManager = globals.bind(&qh, 3..=3, ()).unwrap();
         let device = manager.get_data_device(&seat, &qh, ());
+        let effects = globals.bind(&qh, 1..=1, ()).ok();
         let surface = compositor.create_surface(&qh, ());
         let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
         let toplevel = xdg.get_toplevel(&qh, ());
-        toplevel.set_title("victim".into());
+        toplevel.set_title(title.into());
         surface.commit();
 
         let seen = Arc::new(Mutex::new(Seen::default()));
@@ -110,7 +128,7 @@ impl Window {
             seen: seen.clone(),
             clip: clip.clone(),
             shm,
-            surface,
+            surface: surface.clone(),
             argb,
             size: (200, 200),
         };
@@ -125,12 +143,35 @@ impl Window {
             clip,
             manager,
             device,
+            compositor,
+            surface,
+            effects,
+            effect: OnceCell::new(),
         };
         wait_for(
             || window.seen().mapped.then_some(()),
             "the window to be mapped",
         );
         window
+    }
+
+    /// Ask for what's behind it blurred, where rect is (x, y, width,
+    /// height, from its top left); None: nowhere.
+    pub fn ask_blur(&self, rect: Option<(i32, i32, i32, i32)>) {
+        let manager = (self.effects.as_ref()).expect("no ext_background_effect_manager_v1");
+        let effect = (self.effect)
+            .get_or_init(|| manager.get_background_effect(&self.surface, &self.qh, ()));
+        match rect {
+            Some((x, y, w, h)) => {
+                let region = self.compositor.create_region(&self.qh, ());
+                region.add(x, y, w, h);
+                effect.set_blur_region(Some(&region));
+                region.destroy();
+            }
+            None => effect.set_blur_region(None),
+        }
+        self.surface.commit();
+        self.conn.flush().unwrap();
     }
 
     /// What it's been told, so far.
@@ -457,7 +498,7 @@ impl Dispatch<WlDataSource, ()> for Client {
 
 /// Objects whose events don't matter here.
 macro_rules! ignore {
-    ($($t:ty),*) => {$(
+    ($($t:ty),* $(,)?) => {$(
         impl Dispatch<$t, ()> for Client {
             fn event(_: &mut Self, _: &$t, _: <$t as wayland_client::Proxy>::Event, _: &(),
                 _: &Connection, _: &QueueHandle<Self>) {}
@@ -470,7 +511,10 @@ ignore!(
     WlShmPool,
     WlBuffer,
     WlSurface,
-    WlDataDeviceManager
+    WlDataDeviceManager,
+    WlRegion,
+    ExtBackgroundEffectManagerV1,
+    ExtBackgroundEffectSurfaceV1,
 );
 
 impl Dispatch<WlRegistry, GlobalListContents> for Client {

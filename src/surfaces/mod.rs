@@ -1,6 +1,7 @@
 //! wl_compositor: every client surface's commits, before whatever role it
 //! has (window, bar, popup) gets them.
 
+pub mod background_effect;
 mod buffers;
 mod syncobj;
 

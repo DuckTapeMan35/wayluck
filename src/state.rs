@@ -172,6 +172,8 @@ impl Wayluck {
         Self::screencopy_global(&dh);
         Self::toplevel_list_global(&dh);
         Self::image_capture_globals(&dh);
+        // Clients asking for what's behind their windows blurred.
+        Self::background_effect_global(&dh);
         // Asking the user what to share.
         Self::listen_for_picks(&event_loop.handle(), &socket_name);
         // One keyboard (the default keymap; 200 ms delay, 25 repeats/s) and

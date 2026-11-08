@@ -13,7 +13,12 @@ mod xdg_shell;
 use crate::{
     Wayluck,
     capture::image_capture,
-    render::{Border, rounded::ClipIds, shadow::Shadow},
+    render::{
+        Border,
+        blur::{self, Mode},
+        rounded::ClipIds,
+        shadow::Shadow,
+    },
     wm::scenes::{self, SceneId},
 };
 pub use animation::{Curve, Setting};
@@ -62,6 +67,12 @@ pub struct Windows {
     borders: HashMap<WindowId, Border>,
     /// The shadows it gave them.
     shadows: HashMap<WindowId, Shadow>,
+    /// Where it said to blur behind them (Client, if it didn't).
+    blurs: HashMap<WindowId, Mode>,
+    /// How strongly, for all of them.
+    pub blur: blur::Strength,
+    /// What's kept of each one's blur, from frame to frame.
+    behind: HashMap<WindowId, blur::Behind>,
     /// Windows the window manager has placed or hidden at least once: their
     /// first configure can carry what it decided.
     decided: HashSet<WindowId>,
@@ -126,6 +137,8 @@ impl Windows {
         self.owned.remove(&id);
         self.borders.remove(&id);
         self.shadows.remove(&id);
+        self.blurs.remove(&id);
+        self.behind.remove(&id);
         self.decided.remove(&id);
         self.waiting.remove(&id);
         self.animations.remove(&id);
@@ -224,6 +237,14 @@ impl Windows {
 
     pub fn shadow_mut(&mut self, id: WindowId) -> Option<&mut Shadow> {
         self.shadows.get_mut(&id)
+    }
+
+    pub fn blur_mode(&self, id: WindowId) -> Mode {
+        self.blurs.get(&id).copied().unwrap_or_default()
+    }
+
+    pub fn behind_mut(&mut self, id: WindowId) -> &mut blur::Behind {
+        self.behind.entry(id).or_default()
     }
 
     pub fn len(&self) -> usize {

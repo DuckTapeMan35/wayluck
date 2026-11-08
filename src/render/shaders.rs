@@ -6,11 +6,11 @@ use smithay::{
     backend::{
         drm::DrmDeviceFd,
         renderer::{
-            Renderer,
+            Bind, Renderer,
             element::{Element, Id, Kind, RenderElement, UnderlyingStorage},
             gles::{
-                GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, GlesTexProgram, UniformName,
-                UniformType, element::PixelShaderElement,
+                GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, GlesTexProgram, GlesTexture,
+                UniformName, UniformType, element::PixelShaderElement,
             },
             multigpu::{Error as MultiError, MultiFrame, MultiRenderer, gbm::GbmGlesBackend},
             utils::{CommitCounter, DamageSet, OpaqueRegions},
@@ -21,7 +21,7 @@ use smithay::{
 
 /// A renderer that draws with GLES underneath: wayluck's shaders can draw
 /// with it.
-pub trait AsGles: Renderer {
+pub trait AsGles: Renderer + Bind<GlesTexture> {
     /// The GlesRenderer, to compile shaders with.
     fn gles(&mut self) -> &mut GlesRenderer;
     /// A frame of it as the GlesFrame underneath, to draw with them.
@@ -80,12 +80,19 @@ const CLIP: &str = include_str!("shaders/clip.frag");
 /// element as far as the blur reaches; not drawn under what casts it.
 const SHADOW: &str = include_str!("shaders/shadow.frag");
 
+/// Blur's passes, halving what's drawn and then doubling it back (dual
+/// kawase): each pixel a weighted sum of samples around it.
+const BLUR_DOWN: &str = include_str!("shaders/blur_down.frag");
+const BLUR_UP: &str = include_str!("shaders/blur_up.frag");
+
 /// wayluck's shaders, compiled once for each GL context.
 #[derive(Clone)]
 pub struct Shaders {
     pub border: GlesPixelProgram,
     pub clip: GlesTexProgram,
     pub shadow: GlesPixelProgram,
+    pub blur_down: GlesTexProgram,
+    pub blur_up: GlesTexProgram,
 }
 
 impl Shaders {
@@ -139,10 +146,19 @@ impl Shaders {
                 UniformName::new("color", UniformType::_4f),
             ],
         )?;
+        let blur = [
+            UniformName::new("halfpixel", UniformType::_2f),
+            UniformName::new("offset", UniformType::_1f),
+            UniformName::new("edge", UniformType::_2f),
+        ];
+        let blur_down = gles.compile_custom_texture_shader(BLUR_DOWN, &blur)?;
+        let blur_up = gles.compile_custom_texture_shader(BLUR_UP, &blur)?;
         Ok(Shaders {
             border,
             clip,
             shadow,
+            blur_down,
+            blur_up,
         })
     }
 }

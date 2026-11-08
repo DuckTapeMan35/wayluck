@@ -11,7 +11,7 @@ use super::{
 };
 use crate::{
     Wayluck,
-    render::{argb, rounded::Outline, shadow::Spec},
+    render::{argb, blur::Mode, rounded::Outline, shadow::Spec},
     windows::Change,
 };
 use smithay::{
@@ -143,6 +143,15 @@ impl Dispatch<WayluckWmTransactionV1, Transaction> for Wayluck {
             }
             Request::Hide { window } => Some(Change::Hide(id_of(&window))),
             Request::Instant { window } => Some(Change::Instant(window.as_ref().map(id_of))),
+            Request::Blur { window, blur } => {
+                let mode = match blur.into_result() {
+                    Ok(wayluck_wm_transaction_v1::Blur::Client) => Mode::Client,
+                    Ok(wayluck_wm_transaction_v1::Blur::Off) => Mode::Off,
+                    Ok(wayluck_wm_transaction_v1::Blur::On) => Mode::On,
+                    Err(_) => Mode::Client,
+                };
+                Some(Change::Blur(id_of(&window), mode))
+            }
             Request::StartFrom {
                 window,
                 x,

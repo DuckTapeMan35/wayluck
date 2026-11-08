@@ -6,6 +6,7 @@ use crate::{
     Wayluck,
     render::{
         Border,
+        blur::Mode,
         rounded::Outline,
         shadow::{Shadow, Spec},
     },
@@ -50,6 +51,8 @@ pub enum Change {
     StartFrom(WindowId, Rectangle<i32, Logical>),
     /// Draw a shadow below a window.
     Shadow(WindowId, Spec),
+    /// Where to blur behind a window.
+    Blur(WindowId, Mode),
 }
 
 impl Wayluck {
@@ -80,6 +83,7 @@ impl Wayluck {
                 | Change::Focus(Some(id))
                 | Change::Border(id, ..)
                 | Change::Shadow(id, _)
+                | Change::Blur(id, _)
                 | Change::Fullscreen(id, _)
                 | Change::StartFrom(id, _)
                 | Change::Instant(Some(id))
@@ -162,6 +166,7 @@ impl Wayluck {
                 | Change::Outline(..)
                 | Change::Border(..)
                 | Change::Shadow(..)
+                | Change::Blur(..)
                 | Change::Show(..)
                 | Change::Instant(_)
                 | Change::StartFrom(..)
@@ -299,6 +304,11 @@ impl Wayluck {
                             .entry(id)
                             .and_modify(|s| s.set(spec))
                             .or_insert_with(|| Shadow::new(spec));
+                    }
+                }
+                Change::Blur(id, mode) => {
+                    if self.windows.get(id).is_some() {
+                        self.windows.blurs.insert(id, mode);
                     }
                 }
                 Change::Fullscreen(id, on) => {

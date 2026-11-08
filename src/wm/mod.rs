@@ -14,6 +14,7 @@ pub use bindings::modifier_bits;
 
 use crate::{
     Wayluck,
+    render::blur::Strength,
     windows::{Curve, Setting, WindowId, Windows},
 };
 use bindings::{ButtonBinding, KeyBinding};
@@ -232,6 +233,18 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
                 };
                 if state.wm.manager.as_ref() == Some(manager) {
                     state.windows.set_animation(None, Some(setting));
+                }
+            }
+            wayluck_wm_manager_v1::Request::SetBlur { passes, offset } => {
+                let Some(strength) = Strength::new(passes, offset as f32) else {
+                    manager.post_error(
+                        wayluck_wm_manager_v1::Error::InvalidBlur,
+                        "set_blur: passes aren't 1 to 8, or the offset isn't above 0",
+                    );
+                    return;
+                };
+                if state.wm.manager.as_ref() == Some(manager) {
+                    state.windows.blur = strength;
                 }
             }
         }
