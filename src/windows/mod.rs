@@ -2,6 +2,7 @@
 //! window by; a surface finds its window's id without searching (it's kept
 //! in the surface's own data).
 
+mod animation;
 mod apply;
 mod atomic;
 mod decoration;
@@ -9,15 +10,20 @@ mod list;
 mod popups;
 mod xdg_shell;
 
+use crate::{
+    Wayluck,
+    capture::image_capture,
+    render::{Border, rounded::ClipIds},
+    wm::scenes::{self, SceneId},
+};
+pub use animation::{Curve, Setting};
 pub use apply::Change;
 pub use atomic::Pending;
 pub use list::ToplevelList;
-pub use xdg_shell::handle_commit;
-
-use crate::{Wayluck, capture::image_capture, render::Border, wm::scenes};
 use smithay::{
     desktop::Window,
     reexports::wayland_server::protocol::wl_surface::WlSurface,
+    utils::{Logical, Rectangle},
     wayland::{
         compositor::{add_pre_commit_hook, with_states},
         seat::WaylandFocus,
@@ -28,7 +34,9 @@ use smithay::{
 use std::{
     collections::{HashMap, HashSet},
     fmt,
+    time::Instant,
 };
+pub use xdg_shell::handle_commit;
 
 /// A window's id: stays the same for its life, never reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -63,6 +71,15 @@ pub struct Windows {
     fullscreen: HashSet<WindowId>,
     /// The window manager's own (own_window): never focused, never listed.
     owned: HashSet<WindowId>,
+    /// Windows on their way to where they're placed.
+    animations: HashMap<WindowId, animation::Animation>,
+    /// Where each window was placed last, in which scene: where it's
+    /// drawn, unless it's on its way there.
+    placed: HashMap<WindowId, (SceneId, Rectangle<i32, Logical>)>,
+    /// How windows move, as the window manager set it for all of them
+    /// (None: they don't), and for some on their own.
+    animation: Option<Setting>,
+    animation_of: HashMap<WindowId, Setting>,
     next: u32,
 }
 
@@ -108,7 +125,68 @@ impl Windows {
         self.borders.remove(&id);
         self.decided.remove(&id);
         self.waiting.remove(&id);
+        self.animations.remove(&id);
+        self.placed.remove(&id);
+        self.animation_of.remove(&id);
         self.by_id.remove(&id)
+    }
+
+    /// Where window id is drawn in its scene at now, while it's on its way
+    /// to where it's placed; None if it isn't (it's drawn where it is).
+    pub fn animated_at(&self, id: WindowId, now: Instant) -> Option<Rectangle<i32, Logical>> {
+        self.animations.get(&id)?.at(now)
+    }
+
+    /// How windows move: all of them, or (with id) one, whatever all of
+    /// them do (None: as all of them do again).
+    pub fn set_animation(&mut self, id: Option<WindowId>, setting: Option<Setting>) {
+        match id {
+            None => self.animation = setting,
+            Some(id) => match setting {
+                Some(setting) => {
+                    self.animation_of.insert(id, setting);
+                }
+                None => {
+                    self.animation_of.remove(&id);
+                }
+            },
+        }
+    }
+
+    /// No window moves, or is on its way anywhere (the window manager that
+    /// said how is gone).
+    pub fn forget_animations(&mut self) {
+        self.animation = None;
+        self.animation_of.clear();
+        self.animations.clear();
+    }
+
+    /// How window id moves; None: it doesn't.
+    fn animation_for(&self, id: WindowId) -> Option<Setting> {
+        let setting = self.animation_of.get(&id).copied().or(self.animation)?;
+        (!setting.duration.is_zero()).then_some(setting)
+    }
+
+    /// The ids window id's surfaces are drawn under, stretched on its way
+    /// somewhere.
+    pub fn animation_ids(&mut self, id: WindowId) -> Option<&mut ClipIds> {
+        self.animations.get_mut(&id).map(|a| &mut a.ids)
+    }
+
+    /// Are windows on their way somewhere, or did one just get there?
+    /// Those there are forgotten: drawn once more, they're where they're
+    /// placed.
+    pub fn animations_going(&mut self, now: Instant) -> bool {
+        let any = !self.animations.is_empty();
+        self.animations.retain(|_, a| a.at(now).is_some());
+        any
+    }
+
+    /// The windows on their way somewhere, at now.
+    pub fn animated(&self, now: Instant) -> impl Iterator<Item = WindowId> + '_ {
+        (self.animations.iter())
+            .filter(move |(_, a)| a.at(now).is_some())
+            .map(|(id, _)| *id)
     }
 
     pub fn get(&self, id: WindowId) -> Option<&Window> {

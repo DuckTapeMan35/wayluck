@@ -17,6 +17,8 @@
 //!   are: `monitor NAME@x,y,widthxheight` (or `workspace N@…`, `window
 //!   ID@…`), ` *` after the selected one, "; " between; `-` if it isn't
 //!   up.
+//! - `animating`: each window on its way to where it's placed, and where
+//!   it's drawn now in its scene, `title@x,y,widthxheight`, "; " between.
 //!
 //! It's at $XDG_RUNTIME_DIR/wayluck-test.<WAYLAND_DISPLAY>. Builds without
 //! the feature have none of this: the harness checks they refuse it.
@@ -168,6 +170,24 @@ fn run(command: &str, state: &mut Wayluck) -> String {
             let x = current_data_device_selection_userdata(&state.seat).is_some();
             if x { "x" } else { "-" }.into()
         }
+        ["animating"] => {
+            let now = std::time::Instant::now();
+            let ids: Vec<_> = state.windows.animated(now).collect();
+            let windows: Vec<String> = (ids.into_iter())
+                .filter_map(|id| {
+                    let rect = state.windows.animated_at(id, now)?;
+                    // A window closed but still animated shows, untitled.
+                    let names = state.windows.get(id).map(windows::names);
+                    let title = names.and_then(|(title, _)| title);
+                    let (x, y, width, height) = (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h);
+                    Some(format!(
+                        "{}@{x},{y},{width}x{height}",
+                        title.unwrap_or_default()
+                    ))
+                })
+                .collect();
+            windows.join("; ")
+        }
         ["move", x, y] => match (x.parse(), y.parse()) {
             (Ok(x), Ok(y)) => {
                 state.move_pointer((x, y).into(), time);
@@ -175,6 +195,9 @@ fn run(command: &str, state: &mut Wayluck) -> String {
             }
             _ => "error: move X Y".into(),
         },
+        ["frames"] => super::headless::FRAMES
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .to_string(),
         ["button", code, how] => match (code.parse(), pressed(how)) {
             (Ok(code), Some(down)) => {
                 let how = if down {

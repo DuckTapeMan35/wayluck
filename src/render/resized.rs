@@ -1,7 +1,9 @@
-//! Something drawn small: elements shrunk, moved and cut to a rectangle,
-//! under ids of their own. The same surface may be in several thumbnails
-//! at once (a window, and the monitor it's on), and the damage tracker
-//! tells elements apart by id.
+//! Something drawn at another size than it is: elements scaled (around a
+//! point), moved and cut to a rectangle, under ids of their own. A window
+//! on its way somewhere, stretched to where it's drawn meanwhile; a
+//! thumbnail in the picker. The same surface may be drawn in several
+//! places at once (a window, and the monitor it's on), and the damage
+//! tracker tells elements apart by id.
 
 use super::{
     Element,
@@ -21,24 +23,24 @@ use smithay::{
 
 type Inner<R> = CropRenderElement<RelocateRenderElement<RescaleRenderElement<Element<R>>>>;
 
-pub struct Thumbnail<R: Renderer> {
+pub struct Resized<R: Renderer> {
     // Boxed: an Element can be a thumbnail of Elements.
     inner: Box<Inner<R>>,
     id: Id,
 }
 
-impl<R> Thumbnail<R>
+impl<R> Resized<R>
 where
     R: Renderer + ImportAll + ImportMem + AsGles,
     R::TextureId: 'static,
 {
-    /// elements (drawn from (0, 0)) shrunk by shrink, their top left put at
-    /// `at`, and cut to `within`: all at scale. ids: the ids they were drawn
-    /// under last time, kept for those still there.
+    /// elements scaled by by around origin, moved by moved_by, and cut to
+    /// within: all at scale. ids: the ids they were drawn under last time,
+    /// kept for those still there.
     pub fn many(
         elements: Vec<Element<R>>,
-        shrink: f64,
-        at: Point<i32, Physical>,
+        (origin, by): (Point<i32, Physical>, Scale<f64>),
+        moved_by: Point<i32, Physical>,
         within: Rectangle<i32, Physical>,
         scale: Scale<f64>,
         ids: &mut ClipIds,
@@ -48,12 +50,13 @@ where
             .into_iter()
             .filter_map(|e| {
                 let own = e.id().clone();
-                let shrunk = RescaleRenderElement::from_element(e, Point::default(), shrink);
-                let moved = RelocateRenderElement::from_element(shrunk, at, Relocate::Relative);
+                let scaled = RescaleRenderElement::from_element(e, origin, by);
+                let moved =
+                    RelocateRenderElement::from_element(scaled, moved_by, Relocate::Relative);
                 let cut = CropRenderElement::from_element(moved, scale, within)?;
                 let id = old.remove(&own).unwrap_or_else(Id::new);
                 ids.insert(own, id.clone());
-                Some(Element::Thumbnail(Thumbnail {
+                Some(Element::Resized(Resized {
                     inner: Box::new(cut),
                     id,
                 }))
@@ -62,7 +65,7 @@ where
     }
 }
 
-impl<R> smithay::backend::renderer::element::Element for Thumbnail<R>
+impl<R> smithay::backend::renderer::element::Element for Resized<R>
 where
     R: Renderer + ImportAll + ImportMem + AsGles,
     R::TextureId: 'static,
@@ -100,7 +103,7 @@ where
     }
 }
 
-impl<R> RenderElement<R> for Thumbnail<R>
+impl<R> RenderElement<R> for Resized<R>
 where
     R: Renderer + ImportAll + ImportMem + AsGles,
     R::TextureId: 'static,

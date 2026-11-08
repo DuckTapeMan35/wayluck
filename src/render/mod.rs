@@ -1,11 +1,12 @@
 //! Drawing a frame, whatever the backend: nested (winit) or on hardware (DRM).
 
 pub mod cursor;
+pub mod resized;
 pub mod rounded;
 pub mod text;
-pub mod thumbnail;
 
 use crate::{Wayluck, layers::Side, wm::scenes::Scene};
+use resized::Resized;
 use rounded::{AsGles, BorderElement, ClipIds, ClippedSurface, Shaders};
 use smithay::{
     backend::renderer::{
@@ -25,7 +26,7 @@ use smithay::{
     utils::{Logical, Physical, Point, Rectangle, Scale},
     wayland::{seat::WaylandFocus, shell::wlr_layer::Layer},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The parts of an output that changed, in its pixels; None: nothing did.
 pub type Damage = Option<Vec<Rectangle<i32, Physical>>>;
@@ -41,7 +42,7 @@ render_elements! {
     Border = BorderElement,
     Memory = MemoryRenderBufferRenderElement<R>,
     Solid = SolidColorRenderElement,
-    Thumbnail = thumbnail::Thumbnail<R>,
+    Resized = resized::Resized<R>,
 }
 
 /// Draw output into a framebuffer (nested: the window's), over the clear
@@ -142,30 +143,43 @@ where
     let shown: Vec<_> = (state.scenes.shown_on(output))
         .map(|scene| scene.windows().rev().collect())
         .unwrap_or_default();
+    let now = Instant::now();
+    let whole = Rectangle::from_size(area.size.to_physical_precise_round(scale));
     for (id, at) in shown {
         let Some(window) = state.windows.get(id).cloned() else {
             continue;
         };
+        // On its way somewhere: drawn where it is now, stretched to that
+        // size (whatever size its client drew).
+        let size = window.geometry().size;
+        let moving = state.windows.animated_at(id, now);
+        let (at, drawn_size) = moving.map_or((at, size), |r| (r.loc, r.size));
         // The window, then its border behind it (with its corners' radius).
-        let Some(border) = state.windows.border_mut(id) else {
-            elements.extend(window_elements(renderer, &window, at, scale, 0, None));
-            continue;
-        };
-        let ids = Some(&mut border.clip_ids);
-        elements.extend(window_elements(
-            renderer,
-            &window,
-            at,
-            scale,
-            border.radius,
-            ids,
-        ));
-        let content = Rectangle::new(at, window.geometry().size);
-        elements.extend(
-            border
-                .element(renderer, content, Point::default())
-                .map(Element::Border),
-        );
+        let border = state.windows.border_mut(id);
+        let radius = border.as_ref().map_or(0, |b| b.radius);
+        let ids = border.map(|b| &mut b.clip_ids);
+        let mut drawn = window_elements(renderer, &window, at, scale, radius, ids);
+        if moving.is_some()
+            && let Some(ids) = state.windows.animation_ids(id)
+            && size.w > 0
+            && size.h > 0
+        {
+            let origin = at.to_physical_precise_round(scale);
+            let by = Scale::from((
+                drawn_size.w as f64 / size.w as f64,
+                drawn_size.h as f64 / size.h as f64,
+            ));
+            drawn = Resized::many(drawn, (origin, by), Point::default(), whole, scale, ids);
+        }
+        elements.extend(drawn);
+        if let Some(border) = state.windows.border_mut(id) {
+            let content = Rectangle::new(at, drawn_size);
+            elements.extend(
+                border
+                    .element(renderer, content, Point::default())
+                    .map(Element::Border),
+            );
+        }
     }
 
     // The outlines on the scene it shows, behind its windows: they're
@@ -360,6 +374,11 @@ pub fn frame_done(state: &mut Wayluck, output: &Output) {
     }
     drop(map);
     state.popups.cleanup();
+    // Windows on their way somewhere: drawn again (and once more when
+    // they get there, where they're placed).
+    if state.windows.animations_going(Instant::now()) {
+        state.queue_redraw();
+    }
 }
 
 /// A window's border, drawn around it: outside what it shows, so it fits

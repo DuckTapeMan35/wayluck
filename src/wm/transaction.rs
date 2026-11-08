@@ -126,6 +126,17 @@ impl Dispatch<WayluckWmTransactionV1, Transaction> for Wayluck {
                 Some(Change::Fullscreen(id_of(&window), fullscreen != 0))
             }
             Request::Hide { window } => Some(Change::Hide(id_of(&window))),
+            Request::Instant => Some(Change::Instant),
+            Request::StartFrom {
+                window,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                let from = Rectangle::new((x, y).into(), (width, height).into());
+                Some(Change::StartFrom(id_of(&window), from))
+            }
             Request::Commit => None,
             Request::Focus { window } => Some(Change::Focus(window.as_ref().map(id_of))),
         };

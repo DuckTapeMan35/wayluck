@@ -17,11 +17,19 @@ use smithay::{
     reexports::calloop::{EventLoop, ping::make_ping},
     utils::Transform,
 };
-use std::{cell::RefCell, error::Error, rc::Rc};
+use std::{
+    cell::RefCell,
+    error::Error,
+    rc::Rc,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 /// Its size, and refresh rate (mHz).
 const SIZE: (i32, i32) = (1280, 800);
 const REFRESH: i32 = 60_000;
+
+/// Frames drawn so far.
+pub static FRAMES: AtomicU64 = AtomicU64::new(0);
 
 pub fn init(
     event_loop: &mut EventLoop<Wayluck>,
@@ -77,6 +85,7 @@ pub fn init(
     event_loop
         .handle()
         .insert_source(asked, move |_, _, state| {
+            FRAMES.fetch_add(1, Ordering::Relaxed);
             let mut drawn = drawn.borrow_mut();
             let (renderer, buffer, damage) = &mut *drawn;
             let rendered = match renderer.bind(buffer) {

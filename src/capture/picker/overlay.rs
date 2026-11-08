@@ -7,9 +7,9 @@ use crate::{
     Wayluck,
     render::{
         self, Element, argb,
+        resized::Resized,
         rounded::{AsGles, ClipIds},
         text::Text,
-        thumbnail::Thumbnail,
     },
     windows::{self, WindowId},
     wm::scenes::{Scene, SceneId},
@@ -305,7 +305,8 @@ impl Wayluck {
                 let at = fitted.loc.to_physical_precise_round(scale);
                 let within = fitted.to_physical_precise_round(scale);
                 let ids = &mut shown.ids[i];
-                elements.extend(Thumbnail::many(drawn, shrink, at, within, scale, ids));
+                let shrunk = (Point::default(), Scale::from(shrink));
+                elements.extend(Resized::many(drawn, shrunk, at, within, scale, ids));
                 if !matches!(shown.choices[i], Choice::Window(_)) {
                     let backdrop = &mut shown.backdrops[i];
                     backdrop.resize(fitted.size);

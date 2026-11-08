@@ -189,6 +189,24 @@ impl Dispatch<WayluckWmWindowV1, WindowId> for Wayluck {
                     tracing::debug!("X: can't close window {}: {e}", x11.window_id());
                 }
             }
+            // The manager's error, if the curve isn't one.
+            wayluck_wm_window_v1::Request::SetAnimation {
+                duration,
+                x1,
+                y1,
+                x2,
+                y2,
+            } => {
+                let Some(manager) = state.wm.manager.clone() else {
+                    return;
+                };
+                if let Some(setting) = super::animation(&manager, duration, [x1, y1, x2, y2]) {
+                    state.windows.set_animation(Some(*id), Some(setting));
+                }
+            }
+            wayluck_wm_window_v1::Request::UnsetAnimation => {
+                state.windows.set_animation(Some(*id), None);
+            }
             wayluck_wm_window_v1::Request::Destroy => {}
         }
     }

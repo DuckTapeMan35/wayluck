@@ -1,7 +1,7 @@
 //! Changes the window manager asked for, together: what clients are told
 //! at once (sizes, states), and what's shown, once they've redrawn for it.
 
-use super::WindowId;
+use super::{WindowId, animation::Animation};
 use crate::{
     Wayluck,
     render::{Border, rounded::Outline},
@@ -14,7 +14,7 @@ use smithay::{
     utils::{Logical, Rectangle, Serial, Size},
     wayland::shell::xdg::ToplevelStateSet,
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Instant};
 
 /// One change to what's shown.
 pub enum Change {
@@ -39,6 +39,11 @@ pub enum Change {
     Outlines(SceneId),
     /// Draw an outline on a scene.
     Outline(SceneId, Outline),
+    /// Nothing these changes place is animated.
+    Instant,
+    /// Where a window placed in the same changes is drawn moving from (in
+    /// its scene), if it's animated.
+    StartFrom(WindowId, Rectangle<i32, Logical>),
 }
 
 impl Wayluck {
@@ -69,20 +74,29 @@ impl Wayluck {
                 | Change::Focus(Some(id))
                 | Change::Border(id, ..)
                 | Change::Fullscreen(id, _)
+                | Change::StartFrom(id, _)
                 | Change::Tiled(id, _) => *id,
                 Change::Focus(None)
                 | Change::Show(..)
                 | Change::SceneSize(..)
+                | Change::Instant
                 | Change::Outline(..)
                 | Change::Outlines(_) => continue,
             };
             if self.windows.get(id).is_none() {
                 return Err("a window in it is gone");
             }
-            if let Change::Place(_, _, rect) = change
+            if let Change::Place(_, _, rect) | Change::StartFrom(_, rect) = change
                 && (rect.size.w <= 0 || rect.size.h <= 0)
             {
                 return Err("a size isn't positive");
+            }
+            if let Change::StartFrom(id, _) = *change
+                && !changes
+                    .iter()
+                    .any(|c| matches!(c, Change::Place(_, p, _) if *p == id))
+            {
+                return Err("a window starting from somewhere isn't placed");
             }
         }
         // One at a time: one still waiting for its clients is shown first.
@@ -140,6 +154,8 @@ impl Wayluck {
                 | Change::Outline(..)
                 | Change::Border(..)
                 | Change::Show(..)
+                | Change::Instant
+                | Change::StartFrom(..)
                 | Change::SceneSize(..) => {}
             }
         }
@@ -193,14 +209,43 @@ impl Wayluck {
     pub fn show(&mut self, changes: Vec<Change>) {
         // Where things are first: focus and borders then apply to windows
         // where they are now.
+        let now = Instant::now();
+        let instant = changes.iter().any(|c| matches!(c, Change::Instant));
+        let starts: HashMap<_, _> = (changes.iter())
+            .filter_map(|c| match *c {
+                Change::StartFrom(id, from) => Some((id, from)),
+                _ => None,
+            })
+            .collect();
         for change in &changes {
             match *change {
                 Change::Place(scene, id, rect) => {
                     if self.windows.get(id).is_some() {
+                        let from = starts.get(&id).copied().or(self.drawn_in(id, scene, now));
                         self.scenes.place(scene, id, rect.loc);
+                        self.windows.placed.insert(id, (scene, rect));
+                        self.windows.animations.remove(&id);
+                        let setting = self.windows.animation_for(id).filter(|_| !instant);
+                        if let (Some(from), Some(setting)) = (from, setting)
+                            && from != rect
+                        {
+                            let animation = Animation {
+                                from,
+                                to: rect,
+                                start: now,
+                                duration: setting.duration,
+                                curve: setting.curve,
+                                ids: Default::default(),
+                            };
+                            self.windows.animations.insert(id, animation);
+                        }
                     }
                 }
-                Change::Hide(id) => self.scenes.take_out(id),
+                Change::Hide(id) => {
+                    self.scenes.take_out(id);
+                    self.windows.placed.remove(&id);
+                    self.windows.animations.remove(&id);
+                }
                 Change::Show(ref output, scene) => self.scenes.show(output, scene),
                 Change::SceneSize(scene, size) => self.scenes.set_size(scene, size),
                 _ => {}
@@ -209,7 +254,6 @@ impl Wayluck {
         self.sync_space();
         for change in changes {
             match change {
-                Change::Place(..) | Change::Hide(_) | Change::Show(..) | Change::SceneSize(..) => {}
                 Change::Outlines(scene) => self.scenes.clear_outlines(scene),
                 Change::Outline(scene, outline) => self.scenes.add_outline(scene, outline),
                 // The window manager's own windows don't take the keyboard.
@@ -234,9 +278,27 @@ impl Wayluck {
                         self.windows.fullscreen.insert(id);
                     }
                 }
-                Change::Tiled(..) => {} // told already
+                Change::Place(..)
+                | Change::Hide(_)
+                | Change::Show(..)
+                | Change::SceneSize(..)
+                | Change::Tiled(..)
+                | Change::Instant
+                | Change::StartFrom(..) => {} // told already
             }
         }
+    }
+
+    /// Where window id is drawn in scene at now (on its way, or where it
+    /// was placed); None if it isn't in that scene.
+    fn drawn_in(
+        &self,
+        id: WindowId,
+        scene: SceneId,
+        now: Instant,
+    ) -> Option<Rectangle<i32, Logical>> {
+        let (placed_in, placed_at) = *self.windows.placed.get(&id)?;
+        (placed_in == scene).then(|| self.windows.animated_at(id, now).unwrap_or(placed_at))
     }
 }
 

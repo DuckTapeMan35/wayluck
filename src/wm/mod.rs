@@ -14,7 +14,7 @@ pub use bindings::modifier_bits;
 
 use crate::{
     Wayluck,
-    windows::{WindowId, Windows},
+    windows::{Curve, Setting, WindowId, Windows},
 };
 use bindings::{ButtonBinding, KeyBinding};
 use protocol::{
@@ -33,7 +33,7 @@ use smithay::{
         Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, backend::ClientId,
     },
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 use transaction::Transaction;
 
 const VERSION: u32 = 1;
@@ -226,6 +226,20 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
                     state.wm.pointer_grabbed = false;
                 }
             }
+            wayluck_wm_manager_v1::Request::SetAnimation {
+                duration,
+                x1,
+                y1,
+                x2,
+                y2,
+            } => {
+                let Some(setting) = animation(manager, duration, [x1, y1, x2, y2]) else {
+                    return;
+                };
+                if state.wm.manager.as_ref() == Some(manager) {
+                    state.windows.set_animation(None, Some(setting));
+                }
+            }
         }
     }
 
@@ -234,11 +248,32 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
             tracing::info!("window manager gone");
             // Its objects go with it; windows stay where they are, in wayluck's own scene.
             state.wm = WmState::default();
+            // How it had windows move goes with it.
+            state.windows.forget_animations();
             state.configure_waiting();
             state.show_pending();
             state.show_own_scene();
         }
     }
+}
+
+/// How windows move, as the window manager asks (duration in
+/// milliseconds, the curve's x1, y1, x2, y2); None if the curve isn't one:
+/// manager's error.
+pub(super) fn animation(
+    manager: &WayluckWmManagerV1,
+    duration: u32,
+    [x1, y1, x2, y2]: [f64; 4],
+) -> Option<Setting> {
+    let Some(curve) = Curve::new(x1, y1, x2, y2) else {
+        manager.post_error(
+            wayluck_wm_manager_v1::Error::InvalidCurve,
+            "set_animation: the curve's x1 or x2 isn't between 0 and 1",
+        );
+        return None;
+    };
+    let duration = Duration::from_millis(duration.into());
+    Some(Setting { duration, curve })
 }
 
 /// The window a window manager's object stands for.

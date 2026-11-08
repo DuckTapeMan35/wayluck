@@ -79,6 +79,8 @@ pub struct Wm {
     log: Arc<Mutex<Log>>,
     windows: Arc<Mutex<Vec<(WayluckWmWindowV1, u32)>>>,
     manager: WayluckWmManagerV1,
+    /// Its one scene.
+    scene: WayluckWmSceneV1,
 }
 
 impl Wm {
@@ -92,11 +94,12 @@ impl Wm {
         let manager: WayluckWmManagerV1 = globals.bind(&qh, 1..=1, ()).unwrap();
         let log = Arc::new(Mutex::new(Log::default()));
         let windows = Arc::new(Mutex::new(Vec::new()));
+        let scene = manager.scene(&qh, ());
         let mut client = Client {
-            scene: manager.scene(&qh, ()),
             output: None,
             log: log.clone(),
             windows: windows.clone(),
+            scene: scene.clone(),
         };
         std::thread::spawn(move || {
             // Until wayluck goes, at the end of the test.
@@ -108,6 +111,7 @@ impl Wm {
             log,
             windows,
             manager,
+            scene,
         };
         wait_for(
             || wm.log.lock().unwrap().ready.then_some(()),
@@ -157,6 +161,57 @@ impl Wm {
     /// Ask window id's client to close it.
     pub fn close(&self, id: u32) {
         self.proxy(id).close();
+        self.conn.flush().unwrap();
+    }
+
+    /// How windows move: over duration milliseconds, along curve (x1, y1,
+    /// x2, y2).
+    pub fn set_animation(&self, duration: u32, curve: [f64; 4]) {
+        let [x1, y1, x2, y2] = curve;
+        self.manager.set_animation(duration, x1, y1, x2, y2);
+        self.conn.flush().unwrap();
+    }
+
+    /// How window id moves, whatever all windows do (None: as they do).
+    pub fn set_window_animation(&self, id: u32, animation: Option<(u32, [f64; 4])>) {
+        let window = self.proxy(id);
+        match animation {
+            Some((duration, [x1, y1, x2, y2])) => {
+                window.set_animation(duration, x1, y1, x2, y2);
+            }
+            None => window.unset_animation(),
+        }
+        self.conn.flush().unwrap();
+    }
+
+    /// Place window id at rect (x, y, width, height) in its scene: instantly
+    /// (not animated), or starting from start_from.
+    pub fn place(
+        &self,
+        id: u32,
+        rect: (i32, i32, i32, i32),
+        instant: bool,
+        start_from: Option<(i32, i32, i32, i32)>,
+    ) {
+        let (x, y, w, h) = rect;
+        let window = self.proxy(id);
+        let tx = self.manager.transaction(&self.qh, ());
+        tx.place(&self.scene, &window, x, y, w, h);
+        if instant {
+            tx.instant();
+        }
+        if let Some((x, y, w, h)) = start_from {
+            tx.start_from(&window, x, y, w, h);
+        }
+        tx.commit();
+        self.conn.flush().unwrap();
+    }
+
+    /// Say where window id starts from, with no place for it.
+    pub fn start_from_unplaced(&self, id: u32) {
+        let tx = self.manager.transaction(&self.qh, ());
+        tx.start_from(&self.proxy(id), 0, 0, 10, 10);
+        tx.commit();
         self.conn.flush().unwrap();
     }
 
