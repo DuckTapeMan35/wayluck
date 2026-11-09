@@ -4,6 +4,7 @@ use crate::{
     capture::image_capture::ImageCapture,
     capture::picker::Picking,
     capture::screencopy,
+    layers::look::Look,
     render::cursor::Cursor,
     windows::{Pending, ToplevelList, Windows},
     wm::{
@@ -27,6 +28,7 @@ use smithay::{
         wayland_server::{
             Display, DisplayHandle,
             backend::{ClientData, ClientId, DisconnectReason},
+            protocol::wl_surface::WlSurface,
         },
     },
     wayland::{
@@ -129,6 +131,8 @@ pub struct Wayluck {
     pub x_menus: Vec<Window>,
     /// X's docks (panels, bars), mapped: shown where they put themselves.
     pub x_docks: Vec<Window>,
+    /// How the window manager has layer surfaces look, by their surface.
+    pub layer_looks: HashMap<WlSurface, Look>,
     /// What X windows keep along the screen's edges (by X window id):
     /// counted while they're shown docks.
     pub x_struts: HashMap<u32, crate::xwayland::Strut>,
@@ -230,6 +234,7 @@ impl Wayluck {
             wayland_selections: WaylandSelections::default(),
             x_display: None,
             x_door: None,
+            layer_looks: HashMap::new(),
             // Its global is made by the backend, which knows the formats.
             dmabuf_state: DmabufState::new(),
             syncobj_state: None,

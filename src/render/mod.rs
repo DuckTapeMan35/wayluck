@@ -8,7 +8,12 @@ pub mod shaders;
 pub mod shadow;
 pub mod text;
 
-use crate::{Wayluck, layers::Side, surfaces::background_effect::blur_region, wm::scenes::Scene};
+use crate::{
+    Wayluck,
+    layers::{Side, look::Look},
+    surfaces::background_effect::blur_region,
+    wm::scenes::Scene,
+};
 use resized::Resized;
 use rounded::{ClipIds, ClippedSurface};
 use shaders::{AsGles, ShaderElement, Shaders};
@@ -17,7 +22,7 @@ use smithay::{
         Color32F, ImportAll, ImportMem, Renderer, Texture,
         damage::{Error as DamageError, OutputDamageTracker},
         element::{
-            AsRenderElements, Element as _, Id, Kind,
+            Element as _, Id, Kind,
             memory::MemoryRenderBufferRenderElement,
             solid::SolidColorRenderElement,
             surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
@@ -26,11 +31,15 @@ use smithay::{
     },
     desktop::{PopupManager, Window, layer_map_for_output},
     output::Output,
+    reexports::wayland_server::protocol::wl_surface::WlSurface,
     render_elements,
     utils::{Logical, Physical, Point, Rectangle, Scale},
     wayland::{seat::WaylandFocus, shell::wlr_layer::Layer},
 };
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 /// The parts of an output that changed, in its pixels; None: nothing did.
 pub type Damage = Option<Vec<Rectangle<i32, Physical>>>;
@@ -130,8 +139,9 @@ where
     // A virtual output's are its template's.
     let layers_from = state.layers_from(output);
     let above = state.layers(output, Side::Above);
+    let looks = &mut state.layer_looks;
     if let Some(from) = &layers_from {
-        elements.extend(layer_elements(from, renderer, scale, above));
+        elements.extend(layer_elements(from, renderer, scale, above, looks));
     }
 
     // X's menus and tooltips, where they put themselves
@@ -243,8 +253,9 @@ where
     }
 
     let below = state.layers(output, Side::Below);
+    let looks = &mut state.layer_looks;
     if let Some(from) = &layers_from {
-        elements.extend(layer_elements(from, renderer, scale, below));
+        elements.extend(layer_elements(from, renderer, scale, below, looks));
     }
 
     // Each blurred window's blur, behind it: the lowest first, so a window
@@ -278,18 +289,37 @@ pub fn window_elements<R>(
     at: Point<i32, Logical>,
     scale: Scale<f64>,
     radius: u32,
+    ids: Option<&mut ClipIds>,
+) -> Vec<Element<R>>
+where
+    R: Renderer + ImportAll + ImportMem + AsGles,
+    R::TextureId: Clone + Texture + Send + 'static,
+{
+    let Some(surface) = window.wl_surface() else {
+        return Vec::new();
+    };
+    let geometry = window.geometry();
+    let rect = Rectangle::new(at, geometry.size);
+    surface_elements(renderer, &surface, geometry.loc, rect, scale, radius, ids)
+}
+
+/// A surface (a window's, a layer surface's) drawn so that the rectangle
+/// corner (in its own coordinates) is at rect's top left: its popups, then
+/// its surfaces with rect's corners cut off, rounded radius pixels.
+fn surface_elements<R>(
+    renderer: &mut R,
+    surface: &WlSurface,
+    corner: Point<i32, Logical>,
+    rect: Rectangle<i32, Logical>,
+    scale: Scale<f64>,
+    radius: u32,
     mut ids: Option<&mut ClipIds>,
 ) -> Vec<Element<R>>
 where
     R: Renderer + ImportAll + ImportMem + AsGles,
     R::TextureId: Clone + Texture + Send + 'static,
 {
-    let corner = window.geometry().loc;
-    let drawn_at = (at - corner).to_physical_precise_round(scale);
-    let Some(surface) = window.wl_surface() else {
-        return Vec::new();
-    };
-    let surface = &*surface;
+    let drawn_at = (rect.loc - corner).to_physical_precise_round(scale);
     let mut elements = Vec::new();
     // Popups first (they're above), whole.
     for (popup, offset) in PopupManager::popups_for_surface(surface) {
@@ -317,7 +347,7 @@ where
         elements.extend(surfaces.into_iter().map(Element::Surface));
         return elements;
     };
-    let rect = Rectangle::new(at, window.geometry().size).to_physical_precise_round(scale);
+    let rect = rect.to_physical_precise_round(scale);
     let radius = radius as f64 * scale.x;
     // Each surface keeps its id from frame to frame; those gone are dropped.
     let mut old = ids.as_deref_mut().map(std::mem::take).unwrap_or_default();
@@ -395,6 +425,7 @@ fn layer_elements<R>(
     renderer: &mut R,
     scale: Scale<f64>,
     layers: &[Layer],
+    looks: &mut HashMap<WlSurface, Look>,
 ) -> Vec<Element<R>>
 where
     R: Renderer + ImportAll + ImportMem + AsGles,
@@ -405,11 +436,24 @@ where
     for &layer in layers {
         // A layer's surfaces come back to front: the last is on top.
         for surface in map.layers_on(layer).rev() {
-            let Some(geo) = map.layer_geometry(surface) else {
+            let Some(rect) = map.layer_geometry(surface) else {
                 continue;
             };
-            let at = geo.loc.to_physical_precise_round(scale);
-            elements.extend(surface.render_elements::<Element<R>>(renderer, at, scale, 1.0));
+            // As the window manager has it look: its corners cut off, its
+            // shadow behind it.
+            let mut look = looks.get_mut(surface.wl_surface());
+            let radius = look.as_ref().map_or(0, |l| l.radius);
+            let ids = look.as_deref_mut().map(|l| &mut l.clip_ids);
+            let corner = Point::default();
+            let surface = surface.wl_surface();
+            elements.extend(surface_elements(
+                renderer, surface, corner, rect, scale, radius, ids,
+            ));
+            if let Some(shadow) = look.and_then(|l| l.shadow.as_mut()) {
+                let at = Point::default();
+                let shadow = shadow.element(renderer, rect, radius, at);
+                elements.extend(shadow.map(Element::Shader));
+            }
         }
     }
     elements

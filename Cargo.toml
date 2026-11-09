@@ -21,6 +21,7 @@ wayland-protocols = { version = "0.32.13", features = ["server", "staging"] }
 # The tests' Wayland clients.
 wayland-client = "0.31.15"
 wayland-protocols = { version = "0.32.13", features = ["client"] }
+wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
 # The tests' X clients: what an X program can do.
 x11rb = { version = "0.14.0", features = ["xinput", "shm"] }
 
@@ -59,6 +60,10 @@ required-features = ["test-harness"]
 [[test]]
 name = "blur"
 required-features = ["test-harness"]
+
+ [[test]]
+ name = "layers"
+ required-features = ["test-harness"]
 
 [features]
 # For wayluck's tests (tests/): a headless backend (--headless), and later

@@ -286,7 +286,7 @@ impl Client {
 }
 
 /// An unnamed file for a buffer's pixels.
-fn tempfile() -> std::fs::File {
+pub(super) fn tempfile() -> std::fs::File {
     let path = std::env::temp_dir().join(format!(
         "wayluck-test-buffer-{}-{:?}",
         std::process::id(),

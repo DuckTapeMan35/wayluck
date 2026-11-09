@@ -3,6 +3,7 @@
 //! `unavailable`.
 
 mod bindings;
+mod layers;
 mod outputs;
 pub mod protocol;
 pub mod scenes;
@@ -21,6 +22,7 @@ use bindings::{ButtonBinding, KeyBinding};
 use protocol::{
     wayluck_wm_button_binding_v1::WayluckWmButtonBindingV1,
     wayluck_wm_key_binding_v1::WayluckWmKeyBindingV1,
+    wayluck_wm_layer_v1::WayluckWmLayerV1,
     wayluck_wm_manager_v1::{self, WayluckWmManagerV1},
     wayluck_wm_output_v1::WayluckWmOutputV1,
     wayluck_wm_scene_v1::WayluckWmSceneV1,
@@ -29,9 +31,11 @@ use protocol::{
 use scenes::SceneId;
 use smithay::{
     backend::input::InputTime,
+    desktop::layer_map_for_output,
     output::{Output, PhysicalProperties, Subpixel},
     reexports::wayland_server::{
-        Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, backend::ClientId,
+        Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
+        backend::ClientId, protocol::wl_surface::WlSurface,
     },
 };
 use std::{cell::RefCell, collections::HashMap, time::Duration};
@@ -45,6 +49,8 @@ pub struct WmState {
     pub manager: Option<WayluckWmManagerV1>,
     outputs: Vec<(Output, WayluckWmOutputV1)>,
     windows: HashMap<WindowId, WayluckWmWindowV1>,
+    /// Its objects for layer surfaces, by their surface.
+    layers: Vec<(WlSurface, WayluckWmLayerV1)>,
     /// The key combinations it has taken from clients.
     bindings: Vec<WayluckWmKeyBindingV1>,
     /// The pointer buttons it has taken from clients.
@@ -302,11 +308,23 @@ pub(super) fn scene_of(scene: &WayluckWmSceneV1) -> SceneId {
 }
 
 impl Wayluck {
-    /// A window manager was just accepted: every output, every window, then ready.
+    /// A window manager was just accepted: every output, every layer
+    /// surface, every window, then ready.
     fn wm_announce_all(&mut self) {
         let outputs: Vec<Output> = self.monitors().cloned().collect();
         for output in outputs {
             self.wm_output_added(&output);
+        }
+        // Layer surfaces on them.
+        let layers: Vec<_> = (self.monitors())
+            .flat_map(|o| {
+                let map = layer_map_for_output(o);
+                let layers: Vec<_> = map.layers().cloned().collect();
+                layers.into_iter().map(|l| (l, o.clone()))
+            })
+            .collect();
+        for (layer, output) in layers {
+            self.wm_layer_added(&layer, &output);
         }
         // Windows that have committed (and X windows); the rest are
         // announced at their first commit.

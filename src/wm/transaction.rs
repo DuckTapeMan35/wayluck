@@ -4,6 +4,7 @@
 use super::{
     id_of,
     protocol::{
+        wayluck_wm_layer_v1::WayluckWmLayerV1,
         wayluck_wm_manager_v1::WayluckWmManagerV1,
         wayluck_wm_transaction_v1::{self, WayluckWmTransactionV1},
     },
@@ -11,12 +12,15 @@ use super::{
 };
 use crate::{
     Wayluck,
+    layers::look::LookChange,
     render::{argb, blur::Mode, rounded::Outline, shadow::Spec},
     windows::Change,
 };
 use smithay::{
     output::Output,
-    reexports::wayland_server::{Client, DataInit, Dispatch, DisplayHandle, Resource},
+    reexports::wayland_server::{
+        Client, DataInit, Dispatch, DisplayHandle, Resource, WEnum, protocol::wl_surface::WlSurface,
+    },
     utils::Rectangle,
 };
 use std::sync::Mutex;
@@ -143,15 +147,25 @@ impl Dispatch<WayluckWmTransactionV1, Transaction> for Wayluck {
             }
             Request::Hide { window } => Some(Change::Hide(id_of(&window))),
             Request::Instant { window } => Some(Change::Instant(window.as_ref().map(id_of))),
-            Request::Blur { window, blur } => {
-                let mode = match blur.into_result() {
-                    Ok(wayluck_wm_transaction_v1::Blur::Client) => Mode::Client,
-                    Ok(wayluck_wm_transaction_v1::Blur::Off) => Mode::Off,
-                    Ok(wayluck_wm_transaction_v1::Blur::On) => Mode::On,
-                    Err(_) => Mode::Client,
+            Request::Blur { window, blur } => Some(Change::Blur(id_of(&window), mode_of(blur))),
+            Request::LayerCorners { layer, radius } => look(&layer, LookChange::Corners(radius)),
+            Request::LayerShadow {
+                layer,
+                blur,
+                spread,
+                x,
+                y,
+                color,
+            } => {
+                let spec = Spec {
+                    blur,
+                    spread,
+                    offset: (x, y).into(),
+                    color,
                 };
-                Some(Change::Blur(id_of(&window), mode))
+                look(&layer, LookChange::Shadow(spec))
             }
+            Request::LayerBlur { layer, blur } => look(&layer, LookChange::Blur(mode_of(blur))),
             Request::StartFrom {
                 window,
                 x,
@@ -189,5 +203,21 @@ impl Dispatch<WayluckWmTransactionV1, Transaction> for Wayluck {
         if let Err(why) = result {
             transaction.failed(why.into());
         }
+    }
+}
+
+/// A change to how the layer surface behind layer looks.
+fn look(layer: &WayluckWmLayerV1, change: LookChange) -> Option<Change> {
+    let surface = layer.data::<WlSurface>()?.clone();
+    Some(Change::Layer(surface, change))
+}
+
+/// Where to blur, as a transaction says it (client's choice if unknown).
+fn mode_of(blur: WEnum<wayluck_wm_transaction_v1::Blur>) -> Mode {
+    match blur.into_result() {
+        Ok(wayluck_wm_transaction_v1::Blur::Client) => Mode::Client,
+        Ok(wayluck_wm_transaction_v1::Blur::Off) => Mode::Off,
+        Ok(wayluck_wm_transaction_v1::Blur::On) => Mode::On,
+        Err(_) => Mode::Client,
     }
 }

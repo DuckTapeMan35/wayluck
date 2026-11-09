@@ -4,18 +4,21 @@
 use super::{WindowId, animation::Animation};
 use crate::{
     Wayluck,
+    layers::look::LookChange,
     render::{
         Border,
         blur::Mode,
         rounded::Outline,
         shadow::{Shadow, Spec},
     },
-    wm::protocol::wayluck_wm_transaction_v1::WayluckWmTransactionV1,
-    wm::scenes::SceneId,
+    wm::{protocol::wayluck_wm_transaction_v1::WayluckWmTransactionV1, scenes::SceneId},
 };
 use smithay::{
     output::Output,
-    reexports::wayland_protocols::xdg::shell::server::xdg_toplevel,
+    reexports::{
+        wayland_protocols::xdg::shell::server::xdg_toplevel,
+        wayland_server::{Resource, protocol::wl_surface::WlSurface},
+    },
     utils::{Logical, Rectangle, Serial, Size},
     wayland::shell::xdg::ToplevelStateSet,
 };
@@ -25,6 +28,8 @@ use std::{collections::HashMap, time::Instant};
 pub enum Change {
     /// Show a window at a rectangle, asking its client for that size.
     Place(SceneId, WindowId, Rectangle<i32, Logical>),
+    /// How a layer surface looks (by its surface).
+    Layer(WlSurface, LookChange),
     /// Stop showing a window.
     Hide(WindowId),
     /// What an output shows: a scene, or nothing.
@@ -91,6 +96,7 @@ impl Wayluck {
                 Change::Focus(None)
                 | Change::Show(..)
                 | Change::SceneSize(..)
+                | Change::Layer(..)
                 | Change::Instant(None)
                 | Change::Outline(..)
                 | Change::Outlines(_) => continue,
@@ -167,6 +173,7 @@ impl Wayluck {
                 | Change::Border(..)
                 | Change::Shadow(..)
                 | Change::Blur(..)
+                | Change::Layer(..)
                 | Change::Show(..)
                 | Change::Instant(_)
                 | Change::StartFrom(..)
@@ -308,6 +315,11 @@ impl Wayluck {
                             .entry(id)
                             .and_modify(|s| s.set(spec))
                             .or_insert_with(|| Shadow::new(spec));
+                    }
+                }
+                Change::Layer(surface, change) => {
+                    if surface.is_alive() {
+                        self.layer_looks.entry(surface).or_default().change(change);
                     }
                 }
                 Change::Blur(id, mode) => {

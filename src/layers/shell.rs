@@ -47,10 +47,12 @@ impl WlrLayerShellHandler for Wayluck {
             return;
         };
         tracing::info!("layer surface {namespace:?} on {}", output.name());
-        let mapped =
-            layer_map_for_output(&output).map_layer(&LayerSurface::new(surface, namespace));
-        if let Err(e) = mapped {
-            tracing::warn!("a layer surface: {e}");
+        let layer = LayerSurface::new(surface, namespace);
+        let mapped = layer_map_for_output(&output).map_layer(&layer);
+        match mapped {
+            // The window manager hears of it.
+            Ok(()) => self.wm_layer_added(&layer, &output),
+            Err(e) => tracing::warn!("a layer surface: {e}"),
         }
     }
 
@@ -60,6 +62,8 @@ impl WlrLayerShellHandler for Wayluck {
 
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
         layer_died(surface.wl_surface());
+        self.wm_layer_closed(surface.wl_surface());
+        self.layer_looks.remove(surface.wl_surface());
         let found = self.space.outputs().find_map(|output| {
             let map = layer_map_for_output(output);
             let layer = map

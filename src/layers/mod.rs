@@ -2,6 +2,7 @@
 //! the room they leave windows, and under the pointer,
 //! and when one has the keyboard instead of the focused window
 
+pub mod look;
 pub mod shell;
 
 use crate::Wayluck;
@@ -44,10 +45,15 @@ impl Wayluck {
         Some(self.x_reserve(zone))
     }
 
-    /// output's layer surfaces changed: drawn anew, and the room they
-    /// leave windows maybe too.
+    /// output's layer surfaces changed: drawn anew, the room they leave
+    /// windows maybe too, and the window manager hears of any that moved
+    /// to another layer.
     pub fn layers_changed(&mut self, output: &Output) {
         self.queue_redraw();
+        let layers: Vec<_> = layer_map_for_output(output).layers().cloned().collect();
+        for layer in &layers {
+            self.wm_layer_changed(layer);
+        }
         self.usable_changed(output);
     }
 

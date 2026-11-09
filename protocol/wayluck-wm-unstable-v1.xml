@@ -306,6 +306,17 @@
       <arg name="output" type="new_id" interface="wayluck_wm_output_v1"/>
       <arg name="scene" type="object" interface="wayluck_wm_scene_v1"/>
     </event>
+
+    <event name="layer">
+      <description summary="a new layer surface">
+        A bar, wallpaper, notification or launcher (wlr-layer-shell),
+        announced once it's on an output. wayluck places it, as its client
+        asks; the window manager only gives it a look (a transaction's
+        layer requests). Its namespace, layer and output follow at once,
+        then done.
+      </description>
+      <arg name="layer" type="new_id" interface="wayluck_wm_layer_v1"/>
+    </event>
   </interface>
 
   <interface name="wayluck_wm_output_v1" version="1">
@@ -776,6 +787,36 @@
       <arg name="blur" type="uint" enum="blur"/>
     </request>
 
+    <request name="layer_corners">
+      <description summary="round a layer surface's corners">
+        Its corners cut off, rounded radius pixels, as a window's with a
+        border's radius; its shadow and blur take that shape. Until it's
+        told: 0, square. A layer surface gone by then is let be.
+      </description>
+      <arg name="layer" type="object" interface="wayluck_wm_layer_v1"/>
+      <arg name="radius" type="uint"/>
+    </request>
+
+    <request name="layer_shadow">
+      <description summary="draw a shadow below a layer surface">
+        As shadow, for a layer surface: around its shape (layer_corners).
+      </description>
+      <arg name="layer" type="object" interface="wayluck_wm_layer_v1"/>
+      <arg name="blur" type="uint"/>
+      <arg name="spread" type="int"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="color" type="uint"/>
+    </request>
+
+    <request name="layer_blur">
+      <description summary="blur what's behind a layer surface">
+        As blur, for a layer surface. Until it's told: client.
+      </description>
+      <arg name="layer" type="object" interface="wayluck_wm_layer_v1"/>
+      <arg name="blur" type="uint" enum="blur"/>
+    </request>
+
     <event name="applied">
       <description summary="the changes are on screen"/>
     </event>
@@ -785,6 +826,54 @@
         For example, a window in it was closed first.
       </description>
       <arg name="reason" type="string"/>
+    </event>
+  </interface>
+
+  <interface name="wayluck_wm_layer_v1" version="1">
+    <description summary="a layer surface: a bar, wallpaper, notification"/>
+
+    <request name="destroy" type="destructor">
+      <description summary="forget it (after closed)"/>
+    </request>
+
+    <enum name="layer">
+      <entry name="background" value="0"/>
+      <entry name="bottom" value="1"/>
+      <entry name="top" value="2"/>
+      <entry name="overlay" value="3"/>
+    </enum>
+
+    <event name="namespace">
+      <description summary="what its client calls it">
+        Its client's name for what it is ("waybar", "notifications"): the
+        same for its life. Sent with it.
+      </description>
+      <arg name="namespace" type="string"/>
+    </event>
+
+    <event name="layer">
+      <description summary="which layer it's on">
+        Background and bottom: below windows; top and overlay: above them.
+        Sent with it, and again when its client moves it.
+      </description>
+      <arg name="layer" type="uint" enum="layer"/>
+    </event>
+
+    <event name="output">
+      <description summary="the output it's on">
+        Sent with it (null: an output the window manager doesn't know).
+      </description>
+      <arg name="output" type="object" interface="wayluck_wm_output_v1" allow-null="true"/>
+    </event>
+
+    <event name="done">
+      <description summary="that's all, for now">
+        After what it comes with, and after each lot of changes.
+      </description>
+    </event>
+
+    <event name="closed">
+      <description summary="it's gone; destroy it"/>
     </event>
   </interface>
 </protocol>

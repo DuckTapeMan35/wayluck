@@ -4,6 +4,7 @@
 #![allow(dead_code)] // each test uses some of it
 
 pub mod capture;
+pub mod layer;
 pub mod wayland;
 pub mod wm;
 pub mod x;

@@ -1,6 +1,7 @@
 //! A window manager for tests: it shows one scene on the first output,
 //! places every window it hears of at the same rectangle in it, and
-//! focuses it. It offers that scene to the picker, as a workspace. It records what wayluck tells it, and does what a test asks
+//! focuses it. It offers that scene to the picker, as a workspace.
+//! It records what wayluck tells it, and does what a test asks
 //! (close a window, make it fullscreen). It runs on a thread of its own.
 
 use super::{Session, wait_for};
@@ -36,6 +37,7 @@ mod protocol {
     wayland_scanner::generate_client_code!("protocol/wayluck-wm-unstable-v1.xml");
 }
 use protocol::{
+    wayluck_wm_layer_v1::{self, WayluckWmLayerV1},
     wayluck_wm_manager_v1::{self, WayluckWmManagerV1},
     wayluck_wm_output_v1::{self, WayluckWmOutputV1},
     wayluck_wm_scene_v1::{self, WayluckWmSceneV1},
@@ -63,14 +65,26 @@ pub struct Heard {
     pub kind: Option<u32>,
     /// Its hints (the protocol's bits), once it's told.
     pub hints: Option<u32>,
-    /// How many dones it's had.
     /// Whether it wants attention, once it's told.
     pub attention: Option<bool>,
     /// How many times it's asked to be brought forward.
     pub activate_requests: usize,
+    /// How many dones it's had.
     pub dones: usize,
     /// What it had been told at its first done (without this).
     pub at_first_done: Option<Box<Heard>>,
+    pub closed: bool,
+}
+
+/// What it's heard of a layer surface.
+#[derive(Clone, Debug, Default)]
+pub struct HeardLayer {
+    pub namespace: String,
+    /// Its layer (the protocol's value), once it's told.
+    pub layer: Option<u32>,
+    /// It's on an output the window manager knows.
+    pub on_output: bool,
+    pub dones: usize,
     pub closed: bool,
 }
 
@@ -85,6 +99,8 @@ struct Log {
     shared: usize,
     /// What its outputs leave windows (x, y, width, height): the last heard.
     usable: Option<(i32, i32, i32, i32)>,
+    /// Layer surfaces, as heard of.
+    layers: Vec<HeardLayer>,
 }
 
 pub struct Wm {
@@ -93,6 +109,7 @@ pub struct Wm {
     log: Arc<Mutex<Log>>,
     windows: Arc<Mutex<Vec<(WayluckWmWindowV1, u32)>>>,
     manager: WayluckWmManagerV1,
+    layers: Arc<Mutex<Vec<WayluckWmLayerV1>>>,
     /// Its one scene.
     scene: WayluckWmSceneV1,
 }
@@ -109,11 +126,13 @@ impl Wm {
         let log = Arc::new(Mutex::new(Log::default()));
         let windows = Arc::new(Mutex::new(Vec::new()));
         let scene = manager.scene(&qh, ());
+        let layers = Arc::new(Mutex::default());
         let mut client = Client {
             output: None,
             log: log.clone(),
             windows: windows.clone(),
             scene: scene.clone(),
+            layers: layers.clone(),
         };
         std::thread::spawn(move || {
             // Until wayluck goes, at the end of the test.
@@ -126,6 +145,7 @@ impl Wm {
             windows,
             manager,
             scene,
+            layers,
         };
         wait_for(
             || wm.log.lock().unwrap().ready.then_some(()),
@@ -172,6 +192,34 @@ impl Wm {
         self.log.lock().unwrap().usable
     }
 
+    /// The layer surface called namespace, once it's all heard (its first done).
+    pub fn layer(&self, namespace: &str) -> HeardLayer {
+        wait_for(
+            || {
+                let log = self.log.lock().unwrap();
+                let found = log
+                    .layers
+                    .iter()
+                    .find(|l| l.namespace == namespace && l.dones > 0);
+                found.cloned()
+            },
+            &format!("the layer surface {namespace:?}"),
+        )
+    }
+
+    /// Wait for the layer surface called namespace to be as f says.
+    pub fn wait_for_layer(&self, namespace: &str, what: &str, f: impl Fn(&HeardLayer) -> bool) {
+        wait_for(
+            || {
+                let log = self.log.lock().unwrap();
+                (log.layers.iter())
+                    .any(|l| l.namespace == namespace && f(l))
+                    .then_some(())
+            },
+            what,
+        );
+    }
+
     /// Workspaces the user chose to share, so far.
     pub fn shared(&self) -> usize {
         self.log.lock().unwrap().shared
@@ -198,6 +246,39 @@ impl Wm {
             None => window.unset_animation(),
         }
         self.conn.flush().unwrap();
+    }
+
+    /// Cut the layer surface called namespace's corners off, rounded radius
+    /// pixels.
+    pub fn layer_corners(&self, namespace: &str, radius: u32) {
+        let tx = self.manager.transaction(&self.qh, ());
+        tx.layer_corners(&self.layer_proxy(namespace), radius);
+        tx.commit();
+        self.conn.flush().unwrap();
+    }
+
+    /// Give the layer surface called namespace a shadow, as shadow does a
+    /// window.
+    pub fn layer_shadow(
+        &self,
+        namespace: &str,
+        blur: u32,
+        spread: i32,
+        (x, y): (i32, i32),
+        color: u32,
+    ) {
+        let tx = self.manager.transaction(&self.qh, ());
+        tx.layer_shadow(&self.layer_proxy(namespace), blur, spread, x, y, color);
+        tx.commit();
+        self.conn.flush().unwrap();
+    }
+
+    fn layer_proxy(&self, namespace: &str) -> WayluckWmLayerV1 {
+        let log = self.log.lock().unwrap();
+        let at = (log.layers.iter())
+            .position(|l| l.namespace == namespace && !l.closed)
+            .expect("no such layer surface");
+        self.layers.lock().unwrap()[at].clone()
     }
 
     /// Place window id at rect (x, y, width, height) in its scene: instantly
@@ -314,6 +395,8 @@ struct Client {
     output: Option<WayluckWmOutputV1>,
     log: Arc<Mutex<Log>>,
     windows: Arc<Mutex<Vec<(WayluckWmWindowV1, u32)>>>,
+    /// Its objects for layer surfaces, in the order heard of (as in its log).
+    layers: Arc<Mutex<Vec<WayluckWmLayerV1>>>,
 }
 
 impl Client {
@@ -375,6 +458,15 @@ impl Dispatch<WayluckWmManagerV1, ()> for Client {
                 });
             }
             wayluck_wm_manager_v1::Event::Ready => client.log.lock().unwrap().ready = true,
+            wayluck_wm_manager_v1::Event::Layer { layer } => {
+                client.layers.lock().unwrap().push(layer);
+                client
+                    .log
+                    .lock()
+                    .unwrap()
+                    .layers
+                    .push(HeardLayer::default());
+            }
             _ => {}
         }
     }
@@ -383,6 +475,7 @@ impl Dispatch<WayluckWmManagerV1, ()> for Client {
         wayluck_wm_manager_v1::EVT_OUTPUT_OPCODE => (WayluckWmOutputV1, ()),
         wayluck_wm_manager_v1::EVT_WINDOW_OPCODE => (WayluckWmWindowV1, ()),
         wayluck_wm_manager_v1::EVT_SHARE_WORKSPACE_OPCODE => (WayluckWmOutputV1, ()),
+        wayluck_wm_manager_v1::EVT_LAYER_OPCODE => (WayluckWmLayerV1, ()),
     ]);
 }
 
@@ -462,6 +555,33 @@ impl Dispatch<WayluckWmOutputV1, ()> for Client {
         } = event
         {
             client.log.lock().unwrap().usable = Some((x, y, width, height));
+        }
+    }
+}
+
+impl Dispatch<WayluckWmLayerV1, ()> for Client {
+    fn event(
+        client: &mut Self,
+        proxy: &WayluckWmLayerV1,
+        event: wayluck_wm_layer_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let at = (client.layers.lock().unwrap().iter()).position(|l| l == proxy);
+        let Some(at) = at else {
+            return;
+        };
+        let mut log = client.log.lock().unwrap();
+        let heard = &mut log.layers[at];
+        match event {
+            wayluck_wm_layer_v1::Event::Namespace { namespace } => heard.namespace = namespace,
+            wayluck_wm_layer_v1::Event::Layer { layer } => {
+                heard.layer = layer.into_result().ok().map(u32::from)
+            }
+            wayluck_wm_layer_v1::Event::Output { output } => heard.on_output = output.is_some(),
+            wayluck_wm_layer_v1::Event::Done => heard.dones += 1,
+            wayluck_wm_layer_v1::Event::Closed => heard.closed = true,
         }
     }
 }
