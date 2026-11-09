@@ -134,8 +134,8 @@ impl Wayluck {
         // A click on a bar or launcher that takes keys gives it the keyboard;
         // otherwise, on a window, the window manager hears about it.
         // A click in an X menu is its program's: focus stays where it is.
-        let on_menu =
-            self.layer_surface_under(Side::Above, at).is_none() && self.x_menu_under(at).is_some();
+        let on_menu = self.layer_surface_under(Side::Above, at).is_none()
+            && (self.x_menu_under(at).is_some() || self.x_dock_under(at).is_some());
         if pressed && !pointer.is_grabbed() && !on_menu && !self.layer_clicked(at) {
             let clicked = self.window_under(at);
             // The window manager decides about focus; without one, what was
@@ -192,8 +192,11 @@ impl Wayluck {
         if let Some(hit) = self.layer_surface_under(Side::Above, at) {
             return Some(hit);
         }
-        // X's menus, above windows.
+        // X's menus, then its docks, above windows.
         if let Some(hit) = self.x_menu_under(at) {
+            return Some(hit);
+        }
+        if let Some(hit) = self.x_dock_under(at) {
             return Some(hit);
         }
         let in_window = self.space.element_under(at).and_then(|(window, origin)| {
@@ -204,9 +207,13 @@ impl Wayluck {
         in_window.or_else(|| self.layer_surface_under(Side::Below, at))
     }
 
-    /// The window under a point, unless a bar or overlay above windows is, or an X menu.
+    /// The window under a point, unless a bar or overlay above windows is,
+    /// or an X menu or dock.
     fn window_under(&self, at: Point<f64, Logical>) -> Option<WindowId> {
-        if self.layer_surface_under(Side::Above, at).is_some() || self.x_menu_under(at).is_some() {
+        let above = self.layer_surface_under(Side::Above, at).is_some()
+            || self.x_menu_under(at).is_some()
+            || self.x_dock_under(at).is_some();
+        if above {
             return None;
         }
         let (window, _) = self.space.element_under(at)?;

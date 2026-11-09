@@ -59,6 +59,18 @@ pub struct Heard {
     pub size_hints: Option<[i32; 4]>,
     /// Each fullscreen_request (true) and unfullscreen_request (false).
     pub fullscreen_requests: Vec<bool>,
+    /// The kind it's said to be (the protocol's value), once it's told.
+    pub kind: Option<u32>,
+    /// Its hints (the protocol's bits), once it's told.
+    pub hints: Option<u32>,
+    /// How many dones it's had.
+    /// Whether it wants attention, once it's told.
+    pub attention: Option<bool>,
+    /// How many times it's asked to be brought forward.
+    pub activate_requests: usize,
+    pub dones: usize,
+    /// What it had been told at its first done (without this).
+    pub at_first_done: Option<Box<Heard>>,
     pub closed: bool,
 }
 
@@ -71,6 +83,8 @@ struct Log {
     failed: usize,
     /// Workspaces the user chose to share.
     shared: usize,
+    /// What its outputs leave windows (x, y, width, height): the last heard.
+    usable: Option<(i32, i32, i32, i32)>,
 }
 
 pub struct Wm {
@@ -151,6 +165,11 @@ impl Wm {
     /// Transactions wayluck refused, so far.
     pub fn failed(&self) -> usize {
         self.log.lock().unwrap().failed
+    }
+
+    /// What its output leaves windows, once it's heard (x, y, width, height).
+    pub fn usable(&self) -> Option<(i32, i32, i32, i32)> {
+        self.log.lock().unwrap().usable
     }
 
     /// Workspaces the user chose to share, so far.
@@ -243,6 +262,14 @@ impl Wm {
     pub fn shadow(&self, id: u32, blur: u32, spread: i32, (x, y): (i32, i32), color: u32) {
         let tx = self.manager.transaction(&self.qh, ());
         tx.shadow(&self.proxy(id), blur, spread, x, y, color);
+        tx.commit();
+        self.conn.flush().unwrap();
+    }
+
+    /// Give window id the keyboard.
+    pub fn focus(&self, id: u32) {
+        let tx = self.manager.transaction(&self.qh, ());
+        tx.focus(Some(&self.proxy(id)));
         tx.commit();
         self.conn.flush().unwrap();
     }
@@ -387,6 +414,16 @@ impl Dispatch<WayluckWmWindowV1, ()> for Client {
             Event::FullscreenRequest => heard.fullscreen_requests.push(true),
             Event::UnfullscreenRequest => heard.fullscreen_requests.push(false),
             Event::Closed => heard.closed = true,
+            Event::Kind { kind } => heard.kind = kind.into_result().ok().map(u32::from),
+            Event::Hints { hints } => heard.hints = hints.into_result().ok().map(|h| h.bits()),
+            Event::Attention { on } => heard.attention = Some(on != 0),
+            Event::ActivateRequest => heard.activate_requests += 1,
+            Event::Done => {
+                if heard.dones == 0 {
+                    heard.at_first_done = Some(Box::new(heard.clone()));
+                }
+                heard.dones += 1;
+            }
             _ => {}
         });
     }
@@ -410,13 +447,22 @@ impl Dispatch<WayluckWmTransactionV1, ()> for Client {
 
 impl Dispatch<WayluckWmOutputV1, ()> for Client {
     fn event(
-        _: &mut Self,
+        client: &mut Self,
         _: &WayluckWmOutputV1,
-        _: wayluck_wm_output_v1::Event,
+        event: wayluck_wm_output_v1::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        if let wayluck_wm_output_v1::Event::Usable {
+            x,
+            y,
+            width,
+            height,
+        } = event
+        {
+            client.log.lock().unwrap().usable = Some((x, y, width, height));
+        }
     }
 }
 

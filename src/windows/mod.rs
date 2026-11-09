@@ -2,6 +2,7 @@
 //! window by; a surface finds its window's id without searching (it's kept
 //! in the surface's own data).
 
+mod activation;
 mod animation;
 mod apply;
 mod atomic;
@@ -34,7 +35,7 @@ use smithay::{
         seat::WaylandFocus,
         shell::xdg::{ToplevelSurface, XdgToplevelSurfaceData},
     },
-    xwayland::X11Surface,
+    xwayland::{X11Surface, xwm::WmWindowType},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -60,6 +61,18 @@ impl fmt::Display for WindowId {
     }
 }
 
+/// What kind of window one is, whoever its client is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kind {
+    Normal,
+    Dialog,
+    Utility,
+    Splash,
+    Notification,
+    Menu,
+    Toolbar,
+}
+
 #[derive(Default)]
 pub struct Windows {
     by_id: HashMap<WindowId, Window>,
@@ -71,6 +84,9 @@ pub struct Windows {
     blurs: HashMap<WindowId, Mode>,
     /// How strongly, for all of them.
     pub blur: blur::Strength,
+    /// Wayland windows that asked to be brought forward with no right to:
+    /// they want attention, until they're focused.
+    pub asked_attention: HashSet<WindowId>,
     /// What's kept of each one's blur, from frame to frame.
     behind: HashMap<WindowId, blur::Behind>,
     /// Windows the window manager has placed or hidden at least once: their
@@ -122,6 +138,47 @@ impl Windows {
         Self::id_of(&window.toplevel()?.parent()?)
     }
 
+    /// Whether it wants the user's attention: an X window urgent or
+    /// demanding it, a Wayland window that asked to be brought forward.
+    pub fn wants_attention(&self, id: WindowId) -> bool {
+        let x11 = self.get(id).and_then(|w| w.x11_surface().cloned());
+        let x_wants =
+            x11.is_some_and(|x| x.demands_attention() || x.hints().is_some_and(|h| h.urgent));
+        self.asked_attention.contains(&id) || x_wants
+    }
+
+    /// What kind of window it is (X windows' types and Wayland windows'
+    /// parents in the same terms).
+    pub fn kind(&self, id: WindowId) -> Kind {
+        let has_parent = self.parent(id).is_some();
+        let x11_type = (self.get(id))
+            .and_then(|w| w.x11_surface().cloned())
+            .and_then(|x11| x11.window_type());
+        match x11_type {
+            Some(WmWindowType::Dialog) => Kind::Dialog,
+            Some(WmWindowType::Utility) => Kind::Utility,
+            Some(WmWindowType::Splash) => Kind::Splash,
+            Some(WmWindowType::Notification) => Kind::Notification,
+            Some(WmWindowType::Toolbar) => Kind::Toolbar,
+            Some(
+                WmWindowType::Menu
+                | WmWindowType::PopupMenu
+                | WmWindowType::DropdownMenu
+                | WmWindowType::Combo
+                | WmWindowType::Tooltip
+                | WmWindowType::Dnd,
+            ) => Kind::Menu,
+            Some(WmWindowType::Normal | WmWindowType::Desktop | WmWindowType::Dock) | None
+                if has_parent =>
+            {
+                Kind::Dialog
+            }
+            Some(WmWindowType::Normal | WmWindowType::Desktop | WmWindowType::Dock) | None => {
+                Kind::Normal
+            }
+        }
+    }
+
     /// The window an X window is, if it's shown (mapped).
     pub fn find_x11(&self, x11: &X11Surface) -> Option<WindowId> {
         (self.by_id.iter())
@@ -138,6 +195,7 @@ impl Windows {
         self.borders.remove(&id);
         self.shadows.remove(&id);
         self.blurs.remove(&id);
+        self.asked_attention.remove(&id);
         self.behind.remove(&id);
         self.decided.remove(&id);
         self.waiting.remove(&id);

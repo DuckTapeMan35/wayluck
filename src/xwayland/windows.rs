@@ -23,6 +23,10 @@ pub(super) fn associated(state: &mut Wayluck, window: &X11Surface) {
     if !managed || state.windows.find_x11(window).is_some() {
         return;
     }
+    // A dock is no window, but placed where it says, like a bar.
+    if super::docks::is_dock(window) {
+        return super::docks::mapped(state, window.clone());
+    }
     let id = state.add_window(Window::new_x11_window(window.clone()));
     tracing::info!(
         "X: window {} is {id} ({:?})",
@@ -118,8 +122,33 @@ pub(super) fn property_changed(
             state.list_names_changed(id);
         }
         WmWindowProperty::TransientFor => state.wm_window_parent(id),
-        WmWindowProperty::NormalHints => state.wm_size_hints(id),
+        // Urgency is in WM_HINTS.
+        WmWindowProperty::Hints => state.wm_window_attention(id),
+        WmWindowProperty::NormalHints => {
+            state.wm_size_hints(id);
+            state.wm_window_hints(id);
+        }
+        WmWindowProperty::WindowType => state.wm_window_kind(id),
         _ => {}
+    }
+}
+
+/// An X client says its window wants the user's attention (on), or no
+/// longer.
+pub(super) fn demands_attention(state: &mut Wayluck, window: &X11Surface, on: bool) {
+    if let Err(e) = window.set_demands_attention(on) {
+        tracing::debug!("X: can't tell window {}: {e}", window.window_id());
+    }
+    if let Some(id) = state.windows.find_x11(window) {
+        state.wm_window_attention(id);
+    }
+}
+
+/// An X client, or a pager, asked for a window to be the active one: the
+/// window manager hears so, and decides.
+pub(super) fn activate_request(state: &mut Wayluck, window: &X11Surface) {
+    if let Some(id) = state.windows.find_x11(window) {
+        state.wm_activate_request(id);
     }
 }
 

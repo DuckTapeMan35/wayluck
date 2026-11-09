@@ -3,16 +3,93 @@
 //! (where, how big, focus, fullscreen, close) reaches their X clients.
 
 mod harness;
-use harness::{PATIENCE, Session, wayland, wm, wm::Wm, x::XWindow};
+use harness::{PATIENCE, Session, wait_for, wayland, wm, wm::Wm, x::XWindow};
 use std::{
     thread::sleep,
     time::{Duration, Instant},
 };
 use x11rb::{
-    properties::WmSizeHints,
-    protocol::xproto::{AtomEnum, ConnectionExt as _, PropMode},
+    connection::Connection as _,
+    properties::{AspectRatio, WmHints, WmSizeHints},
+    protocol::{
+        shm::ConnectionExt as _,
+        xproto::{AccessControl, AtomEnum, ConnectionExt as _, Family, HostMode, PropMode},
+    },
+    rust_connection::RustConnection,
     wrapper::ConnectionExt as _,
 };
+
+#[test]
+fn xwayland_starts_when_an_x_program_connects() {
+    let mut session = Session::start();
+    let _wm = Wm::start(&session);
+    assert_eq!(session.command("xwayland"), "not started");
+    let _x = XWindow::open(&session.x_display, "xwin", "XApp", (200, 200));
+    assert!(session.command("xwayland").starts_with("running"));
+}
+
+#[test]
+fn x_programs_get_in_only_by_the_door() {
+    let mut session = Session::start();
+    let _wm = Wm::start(&session);
+    let _x = XWindow::open(&session.x_display, "xwin", "XApp", (200, 200));
+    let answer = session.command("xwayland");
+    let xwayland = answer.strip_prefix("running ").expect("Xwayland running");
+    // Straight to Xwayland's own display, with no cookie: turned away.
+    assert!(RustConnection::connect(Some(xwayland)).is_err());
+    // By the door: let in.
+    assert!(RustConnection::connect(Some(&session.x_display)).is_ok());
+}
+
+#[test]
+fn a_program_let_in_cant_let_others_in() {
+    let mut session = Session::start();
+    let _wm = Wm::start(&session);
+    let (conn, _) = RustConnection::connect(Some(&session.x_display)).unwrap();
+    let answer = session.command("xwayland");
+    let xwayland = answer.strip_prefix("running ").expect("Xwayland running");
+    // Asking for anyone to be let in: refused.
+    let opened = conn
+        .set_access_control(AccessControl::DISABLE)
+        .unwrap()
+        .check();
+    assert!(opened.is_err(), "access control turned off");
+    let family = Family::SERVER_INTERPRETED;
+    let host = b"localuser\0root".to_vec();
+    let added = conn
+        .change_hosts(HostMode::INSERT, family, &host)
+        .unwrap()
+        .check();
+    assert!(added.is_err(), "a host added");
+    // And still, straight to Xwayland: turned away.
+    assert!(RustConnection::connect(Some(xwayland)).is_err());
+    // The program's still fine.
+    conn.get_input_focus().unwrap().reply().unwrap();
+    // The key's nowhere on disk.
+    let runtime = session.dir().read_dir().unwrap();
+    assert!(
+        !runtime
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().contains("xauth"))
+    );
+}
+
+#[test]
+fn file_descriptors_get_through_to_xwayland() {
+    let session = Session::start();
+    let _wm = Wm::start(&session);
+    let (conn, _) = RustConnection::connect(Some(&session.x_display)).unwrap();
+    // Shared memory, handed over by its file descriptor (MIT-SHM 1.2).
+    let memory = rustix::fs::memfd_create("x-test", rustix::fs::MemfdFlags::CLOEXEC).unwrap();
+    rustix::fs::ftruncate(&memory, 4096).unwrap();
+    let segment = conn.generate_id().unwrap();
+    conn.shm_attach_fd(segment, memory, false).unwrap();
+    // A request that needs it: an error if it didn't get there.
+    conn.shm_detach(segment)
+        .unwrap()
+        .check()
+        .expect("Xwayland didn't get the memory");
+}
 
 /// The test window manager itself: what it does to a Wayland window, the
 /// tests below expect for X windows.
@@ -30,6 +107,63 @@ fn wayland_windows_go_where_the_window_manager_places_them() {
         );
         sleep(Duration::from_millis(20));
     }
+}
+
+/// The kinds the window manager hears (wayluck_wm_window_v1's kind).
+const NORMAL: u32 = 0;
+const DIALOG: u32 = 1;
+const UTILITY: u32 = 2;
+
+#[test]
+fn an_x_window_is_the_kind_its_type_says() {
+    let session = Session::start();
+    let wm = Wm::start(&session);
+    let _x = XWindow::open_with(&session.x_display, "xtools", "XApp", (100, 100), |c, w| {
+        let atom = |name: &str| {
+            c.intern_atom(false, name.as_bytes())
+                .unwrap()
+                .reply()
+                .unwrap()
+                .atom
+        };
+        let utility = atom("_NET_WM_WINDOW_TYPE_UTILITY");
+        c.change_property32(
+            PropMode::REPLACE,
+            w,
+            atom("_NET_WM_WINDOW_TYPE"),
+            AtomEnum::ATOM,
+            &[utility],
+        )
+        .unwrap();
+    });
+    let id = wm.window("xtools").id;
+    wm.wait_for(id, "it a utility", |w| w.kind == Some(UTILITY));
+}
+
+#[test]
+fn x_and_wayland_windows_without_a_type_are_normal_or_dialogs() {
+    let session = Session::start();
+    let wm = Wm::start(&session);
+    let main = XWindow::open(&session.x_display, "xmain", "XApp", (200, 200));
+    let main_id = wm.window("xmain").id;
+    wm.wait_for(main_id, "it normal", |w| w.kind == Some(NORMAL));
+    // Transient for it, with no type of its own: a dialog.
+    let _dialog = XWindow::open_with(&session.x_display, "xdialog", "XApp", (100, 100), |c, w| {
+        c.change_property32(
+            PropMode::REPLACE,
+            w,
+            AtomEnum::WM_TRANSIENT_FOR,
+            AtomEnum::WINDOW,
+            &[main.id()],
+        )
+        .unwrap();
+    });
+    let dialog = wm.window("xdialog").id;
+    wm.wait_for(dialog, "it a dialog", |w| w.kind == Some(DIALOG));
+    // A Wayland window with no parent: normal too.
+    let _w = wayland::Window::open(&session, 0xff00ff00);
+    let id = wm.window("victim").id;
+    wm.wait_for(id, "the Wayland window normal", |w| w.kind == Some(NORMAL));
 }
 
 #[test]
@@ -119,6 +253,215 @@ fn an_x_dialog_has_its_window_as_parent() {
     wm.wait_for(dialog.id, "the dialog's parent", |w| {
         w.parent == Some(main_id)
     });
+}
+
+#[test]
+fn an_x_window_comes_with_how_its_client_would_like_it_kept() {
+    let session = Session::start();
+    let wm = Wm::start(&session);
+    let _x = XWindow::open_with(&session.x_display, "xkept", "XApp", (300, 200), |c, w| {
+        let atom = |name: &str| {
+            c.intern_atom(false, name.as_bytes())
+                .unwrap()
+                .reply()
+                .unwrap()
+                .atom
+        };
+        let above = atom("_NET_WM_STATE_ABOVE");
+        c.change_property32(
+            PropMode::REPLACE,
+            w,
+            atom("_NET_WM_STATE"),
+            AtomEnum::ATOM,
+            &[above],
+        )
+        .unwrap();
+        let hints = WmSizeHints {
+            aspect: Some((AspectRatio::new(3, 2), AspectRatio::new(3, 2))),
+            ..WmSizeHints::default()
+        };
+        hints.set_normal_hints(c, w).unwrap();
+    });
+    let id = wm.window("xkept").id;
+    // Above (1) and its aspect kept (2), already when it's all there is.
+    let heard = wm.wait_for(id, "its first done", |w| w.dones > 0);
+    let first = heard.at_first_done.unwrap();
+    assert_eq!(first.hints, Some(1 | 2));
+    assert_eq!(first.kind, Some(NORMAL));
+    assert_eq!(first.app_id, "XApp");
+}
+
+#[test]
+fn a_wayland_window_comes_with_what_its_client_set_up() {
+    let session = Session::start();
+    let wm = Wm::start(&session);
+    let _w = wayland::Window::open(&session, 0xff00ff00);
+    let id = wm.window("victim").id;
+    let heard = wm.wait_for(id, "its first done", |w| w.dones > 0);
+    let first = heard.at_first_done.unwrap();
+    assert_eq!(first.title, "victim");
+    assert_eq!(first.kind, Some(NORMAL));
+    assert_eq!(first.hints, Some(0));
+}
+
+#[test]
+fn changes_to_a_window_end_in_a_done() {
+    let session = Session::start();
+    let wm = Wm::start(&session);
+    let x = XWindow::open(&session.x_display, "before", "XApp", (200, 200));
+    let id = wm.window("before").id;
+    let dones = wm.wait_for(id, "its first done", |w| w.dones > 0).dones;
+    x.retitle("after");
+    wm.wait_for(id, "the new title, and a done after it", |w| {
+        w.title == "after" && w.dones > dones
+    });
+}
+
+#[test]
+fn an_urgent_x_window_wants_attention() {
+    let session = Session::start();
+    let wm = Wm::start(&session);
+    let _x = XWindow::open_with(&session.x_display, "xurgent", "XApp", (200, 200), |c, w| {
+        let hints = WmHints {
+            urgent: true,
+            ..WmHints::default()
+        };
+        hints.set(c, w).unwrap();
+    });
+    let id = wm.window("xurgent").id;
+    let heard = wm.wait_for(id, "its first done", |w| w.dones > 0);
+    assert_eq!(heard.at_first_done.unwrap().attention, Some(true));
+}
+
+#[test]
+fn a_pager_asking_for_an_x_window_asks_the_window_manager() {
+    let session = Session::start();
+    let wm = Wm::start(&session);
+    let x = XWindow::open(&session.x_display, "xwin", "XApp", (200, 200));
+    let id = wm.window("xwin").id;
+    x.ask_active();
+    wm.wait_for(id, "it asked to be brought forward", |w| {
+        w.activate_requests == 1
+    });
+}
+
+#[test]
+fn a_wayland_window_asking_with_no_right_to_only_wants_attention() {
+    let session = Session::start();
+    let wm = Wm::start(&session);
+    let first = wayland::Window::titled(&session, 0xff00ff00, "first");
+    let first_id = wm.window("first").id;
+    // The next one has the keyboard: the first's last input is old news.
+    let _second = wayland::Window::titled(&session, 0xff0000ff, "second");
+    wm.window("second");
+    wait_for(
+        || (!first.seen().focused).then_some(()),
+        "the first to lose the keyboard",
+    );
+    first.ask_activation(true);
+    let heard = wm.wait_for(first_id, "it wants attention", |w| {
+        w.attention == Some(true)
+    });
+    assert_eq!(heard.activate_requests, 0);
+    // Focused, it's had it.
+    wm.focus(first_id);
+    wm.wait_for(first_id, "it no longer wants attention", |w| {
+        w.attention == Some(false)
+    });
+}
+
+#[test]
+fn a_wayland_window_asking_with_input_asks_the_window_manager() {
+    let session = Session::start();
+    let wm = Wm::start(&session);
+    let w = wayland::Window::open(&session, 0xff00ff00);
+    let id = wm.window("victim").id;
+    wait_for(|| w.seen().focused.then_some(()), "it to have the keyboard");
+    w.ask_activation(true);
+    wm.wait_for(id, "it asked to be brought forward", |w| {
+        w.activate_requests == 1
+    });
+    // A token from nothing isn't enough.
+    w.ask_activation(false);
+    wm.wait_for(id, "it wants attention", |w| w.attention == Some(true));
+}
+
+#[test]
+fn an_x_dock_is_no_window_and_stays_where_it_puts_itself() {
+    let mut session = Session::start();
+    let wm = Wm::start(&session);
+    let _dock = XWindow::open_with(&session.x_display, "xbar", "XBar", (400, 30), |c, w| {
+        let atom = |name: &str| {
+            c.intern_atom(false, name.as_bytes())
+                .unwrap()
+                .reply()
+                .unwrap()
+                .atom
+        };
+        let dock = atom("_NET_WM_WINDOW_TYPE_DOCK");
+        c.change_property32(
+            PropMode::REPLACE,
+            w,
+            atom("_NET_WM_WINDOW_TYPE"),
+            AtomEnum::ATOM,
+            &[dock],
+        )
+        .unwrap();
+    });
+    wait_for(
+        || (session.command("x-docks") == "xbar@0,0,400x30").then_some(()),
+        "the dock, where it put itself",
+    );
+    // A window after it: the window manager hears of that one only.
+    let _x = XWindow::open(&session.x_display, "xwin", "XApp", (200, 200));
+    wm.window("xwin");
+    assert!(!wm.titles().contains(&"xbar".to_string()));
+}
+
+#[test]
+fn an_x_docks_strut_is_kept_from_windows() {
+    let session = Session::start();
+    let wm = Wm::start(&session);
+    let whole = wait_for(|| wm.usable(), "the output's room");
+    let dock = XWindow::open_with(&session.x_display, "xbar", "XBar", (400, 30), |c, w| {
+        let atom = |name: &str| {
+            c.intern_atom(false, name.as_bytes())
+                .unwrap()
+                .reply()
+                .unwrap()
+                .atom
+        };
+        let dock = atom("_NET_WM_WINDOW_TYPE_DOCK");
+        c.change_property32(
+            PropMode::REPLACE,
+            w,
+            atom("_NET_WM_WINDOW_TYPE"),
+            AtomEnum::ATOM,
+            &[dock],
+        )
+        .unwrap();
+        // 30 along the top, from x 0 to 399.
+        let strut = [0, 0, 30, 0, 0, 0, 0, 0, 0, 399, 0, 0];
+        c.change_property32(
+            PropMode::REPLACE,
+            w,
+            atom("_NET_WM_STRUT_PARTIAL"),
+            AtomEnum::CARDINAL,
+            &strut,
+        )
+        .unwrap();
+    });
+    let kept = (whole.0, whole.1 + 30, whole.2, whole.3 - 30);
+    wait_for(
+        || (wm.usable() == Some(kept)).then_some(()),
+        "the top 30 kept",
+    );
+    // Gone, it keeps nothing.
+    drop(dock);
+    wait_for(
+        || (wm.usable() == Some(whole)).then_some(()),
+        "all of it again",
+    );
 }
 
 #[test]

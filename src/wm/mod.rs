@@ -34,7 +34,7 @@ use smithay::{
         Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, backend::ClientId,
     },
 };
-use std::{collections::HashMap, time::Duration};
+use std::{cell::RefCell, collections::HashMap, time::Duration};
 use transaction::Transaction;
 
 const VERSION: u32 = 1;
@@ -56,6 +56,9 @@ pub struct WmState {
     pub pointer_grabbed: bool,
     /// The window it was last told the pointer is over.
     hovered: Option<WindowId>,
+    /// Windows it's been told about since the last done: each gets one,
+    /// once the loop has handled all there was.
+    told: RefCell<Vec<WindowId>>,
 }
 
 impl WmState {
@@ -138,7 +141,7 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
                 let size = (width, height).into();
                 let output = state.add_virtual_output(size, template, refresh);
                 let resource = data_init.init(id, output.clone());
-                outputs::send_output_state(&resource, &output, &state.space);
+                outputs::send_output_state(&resource, &output, state);
                 state.wm.outputs.push((output, resource));
             }
             wayluck_wm_manager_v1::Request::OfferWorkspace {

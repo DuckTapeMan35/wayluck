@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     state.show_own_scene();
     // X clients: before anything is started, so
     // it's told the display.
-    state.start_xwayland(&event_loop.handle());
+    state.open_x_door(&event_loop.handle());
 
     // On the hardware, wayluck is the session: services started for it
     // hear where it is before anything else starts.
@@ -83,6 +83,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     event_loop.run(None, &mut state, |state| {
+        // What the window manager was told of windows this turn.
+        state.wm_windows_done();
         // Replies to clients are queued while handling; send them once per
         // turn of the loop.
         if let Err(e) = state.display_handle.flush_clients() {

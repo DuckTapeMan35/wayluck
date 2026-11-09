@@ -147,6 +147,24 @@ fn run(command: &str, state: &mut Wayluck) -> String {
                 .collect();
             menus.join("; ")
         }
+        // X's docks, where they are.
+        ["x-docks"] => {
+            let docks: Vec<String> = (state.x_docks.iter())
+                .filter_map(|d| {
+                    let x11 = d.x11_surface()?;
+                    let rect = x11.last_configure();
+                    let (x, y, width, height) = (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h);
+                    Some(format!("{}@{x},{y},{width}x{height}", x11.title()))
+                })
+                .collect();
+            docks.join("; ")
+        }
+        // Whether Xwayland has started (it does when an X program connects),
+        // and its own display.
+        ["xwayland"] => match state.x_door.as_ref().and_then(|d| d.xwayland()) {
+            Some(display) if state.xwm.is_some() => format!("running :{display}"),
+            _ => "not started".into(),
+        },
         ["picker"] => match state.picker_tiles() {
             None => "-".into(),
             Some(tiles) => {

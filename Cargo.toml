@@ -8,7 +8,7 @@ description = "A Wayland compositor that leaves placement to a separate window m
 [dependencies]
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-rustix = { version = "1.1.6", features = ["process"] }
+rustix = { version = "1.1.6", features = ["process", "net", "fs"] }
 wayland-server = "0.31.14"
 wayland-backend = "0.3.17"
 wayland-scanner = "0.31.11"
@@ -22,7 +22,7 @@ wayland-protocols = { version = "0.32.13", features = ["server", "staging"] }
 wayland-client = "0.31.15"
 wayland-protocols = { version = "0.32.13", features = ["client"] }
 # The tests' X clients: what an X program can do.
-x11rb = { version = "0.14.0", features = ["xinput"] }
+x11rb = { version = "0.14.0", features = ["xinput", "shm"] }
 
 [[test]]
 name = "security"

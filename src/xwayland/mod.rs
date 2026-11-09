@@ -4,13 +4,18 @@
 //! placed, closed like any other window), X's menus and tooltips, and the
 //! clipboard between X and Wayland.
 
+mod docks;
+mod door;
 mod menus;
+mod requests;
 mod selection;
+mod struts;
 mod windows;
 
-pub use selection::WaylandSelections;
-
 use crate::{Wayluck, input::KeyboardFocus};
+pub use door::Door;
+use rustix::io::FdFlags;
+pub use selection::WaylandSelections;
 use smithay::{
     reexports::{calloop::LoopHandle, wayland_server::protocol::wl_surface::WlSurface},
     utils::{Logical, Rectangle},
@@ -23,26 +28,53 @@ use smithay::{
         xwm::{Reorder, ResizeEdge, WmWindowProperty, X11Window, XwmId},
     },
 };
-use std::{os::fd::OwnedFd, process::Stdio};
+use std::{
+    os::fd::{AsRawFd, OwnedFd},
+    process::Stdio,
+};
+pub use struts::Strut;
 
 impl Wayluck {
-    /// Start Xwayland (on its own display number), and be its window
-    /// manager once it's ready. Programs started from now on hear its
-    /// display (DISPLAY, session_env).
-    pub fn start_xwayland(&mut self, handle: &LoopHandle<'static, Wayluck>) {
+    /// Start Xwayland (on its own display number, behind wayluck's: the
+    /// door), and be its window manager once it's ready.
+    fn start_xwayland(&mut self, handle: &LoopHandle<'static, Wayluck>) {
+        // Only the door may connect: by the cookie in the file in memory
+        // Xwayland's given (as its own descriptor, from its own /proc/self;
+        // kept from the programs wayluck starts, but for this one).
+        let authority = self.x_authority().map(|fd| fd.try_clone_to_owned());
+        let authority = authority.and_then(|fd| fd.ok());
+        let given = |closed_on_exec: bool| {
+            let flags = if closed_on_exec {
+                FdFlags::CLOEXEC
+            } else {
+                FdFlags::empty()
+            };
+            authority
+                .as_ref()
+                .map(|fd| rustix::io::fcntl_setfd(fd, flags))
+        };
+        given(false);
+        let file = (authority.as_ref()).map(|fd| format!("/proc/self/fd/{}", fd.as_raw_fd()));
+        let args = file
+            .into_iter()
+            .flat_map(|file| ["-auth".to_string(), file]);
         let spawned = XWayland::spawn(
             &self.display_handle,
             None,
             std::iter::empty::<(String, String)>(),
-            std::iter::empty::<String>(),
+            args,
             true,
             Stdio::null(),
             Stdio::inherit(),
             |_| (),
         );
+        given(true);
         let (xwayland, client) = match spawned {
             Ok(spawned) => spawned,
-            Err(e) => return tracing::warn!("no X clients: can't start Xwayland: {e}"),
+            Err(e) => {
+                tracing::warn!("no X clients: can't start Xwayland: {e}");
+                return self.x_door_turn_away();
+            }
         };
         let number = xwayland.display_number();
         let wm_handle = handle.clone();
@@ -54,16 +86,23 @@ impl Wayluck {
                         tracing::info!("Xwayland ready on :{number}");
                         state.xwm = Some(wm);
                         selection::ready(state);
+                        state.x_door_open(number);
                     }
-                    Err(e) => tracing::warn!("can't be Xwayland's window manager: {e}"),
+                    Err(e) => {
+                        tracing::warn!("can't be Xwayland's window manager: {e}");
+                        state.x_door_turn_away();
+                    }
                 }
             }
-            XWaylandEvent::Error => tracing::warn!("Xwayland exited while starting"),
+            XWaylandEvent::Error => {
+                tracing::warn!("Xwayland exited while starting");
+                state.x_door_turn_away();
+            }
         });
         if let Err(e) = source {
-            return tracing::warn!("no X clients: {e}");
+            tracing::warn!("no X clients: {e}");
+            self.x_door_turn_away();
         }
-        self.x_display = Some(format!(":{number}").into());
     }
 
     /// Does an X window have the keyboard (not a Wayland window, a bar, or
@@ -110,11 +149,13 @@ impl XwmHandler for Wayluck {
 
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
         menus::gone(self, &window);
+        docks::gone(self, &window);
         windows::unmapped(self, &window);
     }
 
     fn destroyed_window(&mut self, _xwm: XwmId, window: X11Surface) {
         menus::gone(self, &window);
+        docks::gone(self, &window);
         windows::destroyed(self, &window);
     }
 
@@ -143,6 +184,24 @@ impl XwmHandler for Wayluck {
         windows::fullscreen_request(self, &window, false);
     }
 
+    fn demands_attention_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        windows::demands_attention(self, &window, true);
+    }
+
+    fn undemands_attention_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        windows::demands_attention(self, &window, false);
+    }
+
+    fn active_window_request(
+        &mut self,
+        _xwm: XwmId,
+        window: X11Surface,
+        _timestamp: u32,
+        _currently_active: Option<X11Surface>,
+    ) {
+        windows::activate_request(self, &window);
+    }
+
     fn configure_notify(
         &mut self,
         _xwm: XwmId,
@@ -151,6 +210,7 @@ impl XwmHandler for Wayluck {
         _above: Option<X11Window>,
     ) {
         menus::moved(self, &window);
+        docks::moved(self, &window);
     }
 
     fn resize_request(

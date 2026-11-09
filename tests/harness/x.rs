@@ -350,6 +350,22 @@ impl XWindow {
         self.window
     }
 
+    /// Call it title instead (_NET_WM_NAME, and WM_NAME for older readers).
+    pub fn retitle(&self, title: &str) {
+        let replace = xproto::PropMode::REPLACE;
+        let (net_wm_name, utf8) = (self.atom("_NET_WM_NAME"), self.atom("UTF8_STRING"));
+        let name = (xproto::AtomEnum::WM_NAME, xproto::AtomEnum::STRING);
+        (self
+            .conn
+            .change_property8(replace, self.window, name.0, name.1, title.as_bytes()))
+        .unwrap();
+        (self
+            .conn
+            .change_property8(replace, self.window, net_wm_name, utf8, title.as_bytes()))
+        .unwrap();
+        self.conn.flush().unwrap();
+    }
+
     /// Ask the window manager to make it fullscreen (on), or not, as X
     /// programs do: a _NET_WM_STATE message to the root window.
     pub fn ask_fullscreen(&self, on: bool) {
@@ -363,6 +379,18 @@ impl XWindow {
             state,
             [u32::from(on), fullscreen, 0, 1, 0],
         );
+        let mask =
+            xproto::EventMask::SUBSTRUCTURE_REDIRECT | xproto::EventMask::SUBSTRUCTURE_NOTIFY;
+        self.conn.send_event(false, self.root, mask, event).unwrap();
+        self.conn.flush().unwrap();
+    }
+
+    /// Ask for it to be the active window, as a pager does: a
+    /// _NET_ACTIVE_WINDOW message to the root window.
+    pub fn ask_active(&self) {
+        let active = self.atom("_NET_ACTIVE_WINDOW");
+        // From a pager (2), no time, no window active now.
+        let event = xproto::ClientMessageEvent::new(32, self.window, active, [2, 0, 0, 0, 0]);
         let mask =
             xproto::EventMask::SUBSTRUCTURE_REDIRECT | xproto::EventMask::SUBSTRUCTURE_NOTIFY;
         self.conn.send_event(false, self.root, mask, event).unwrap();

@@ -143,6 +143,14 @@ where
         }
     }
 
+    // X's docks, where they put themselves, below its menus.
+    for dock in state.x_docks.iter().rev() {
+        if let Some(x11) = dock.x11_surface() {
+            let at = x11.last_configure().loc - area.loc;
+            elements.extend(window_elements(renderer, dock, at, scale, 0, None));
+        }
+    }
+
     // The windows of the scene it shows, where they are in it: the scene
     // is drawn from the output's corner. Top window first.
     let shown: Vec<_> = (state.scenes.shown_on(output))
@@ -421,7 +429,7 @@ pub fn frame_done(state: &mut Wayluck, output: &Output) {
             Some(output.clone())
         });
     }
-    for menu in &state.x_menus {
+    for menu in state.x_menus.iter().chain(&state.x_docks) {
         menu.send_frame(output, now, Some(Duration::ZERO), |_, _| {
             Some(output.clone())
         });

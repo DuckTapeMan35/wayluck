@@ -44,11 +44,12 @@ use smithay::{
         },
         shm::ShmState,
         socket::ListeningSocketSource,
+        xdg_activation::XdgActivationState,
         xwayland_shell::XWaylandShellState,
     },
     xwayland::X11Wm,
 };
-use std::{ffi::OsString, sync::Arc};
+use std::{collections::HashMap, ffi::OsString, sync::Arc};
 
 /// Switch to the TTY numbered so.
 pub type ChangeVt = Box<dyn Fn(i32)>;
@@ -119,15 +120,24 @@ pub struct Wayluck {
     pub layer_shell_state: WlrLayerShellState,
     /// X clients: which X window is which surface.
     pub xwayland_shell_state: XWaylandShellState,
+    /// Clients asking for windows to be brought forward.
+    pub activation_state: XdgActivationState,
     /// wayluck as Xwayland's window manager, once Xwayland is ready.
     pub xwm: Option<X11Wm>,
     /// X's override-redirect windows (menus, tooltips), mapped: shown only
     /// while an X window has the keyboard.
     pub x_menus: Vec<Window>,
+    /// X's docks (panels, bars), mapped: shown where they put themselves.
+    pub x_docks: Vec<Window>,
+    /// What X windows keep along the screen's edges (by X window id):
+    /// counted while they're shown docks.
+    pub x_struts: HashMap<u32, crate::xwayland::Strut>,
     /// What Wayland clients copied, for Xwayland.
     pub wayland_selections: WaylandSelections,
     /// Xwayland's display (":1"), for programs started in the session.
     pub x_display: Option<OsString>,
+    /// Where X programs connect, and wait until Xwayland is ready.
+    pub x_door: Option<crate::xwayland::Door>,
     pub dmabuf_state: DmabufState,
     /// Explicit sync, if the GPU's driver can.
     pub syncobj_state: Option<DrmSyncobjState>,
@@ -174,6 +184,7 @@ impl Wayluck {
         Self::image_capture_globals(&dh);
         // Clients asking for what's behind their windows blurred.
         Self::background_effect_global(&dh);
+        let activation_state = Self::activation_global(&dh);
         // Asking the user what to share.
         Self::listen_for_picks(&event_loop.handle(), &socket_name);
         // One keyboard (the default keymap; 200 ms delay, 25 repeats/s) and
@@ -211,10 +222,14 @@ impl Wayluck {
             xdg_decoration_state,
             layer_shell_state,
             xwayland_shell_state,
+            activation_state,
             xwm: None,
             x_menus: Vec::new(),
+            x_docks: Vec::new(),
+            x_struts: HashMap::new(),
             wayland_selections: WaylandSelections::default(),
             x_display: None,
+            x_door: None,
             // Its global is made by the backend, which knows the formats.
             dmabuf_state: DmabufState::new(),
             syncobj_state: None,

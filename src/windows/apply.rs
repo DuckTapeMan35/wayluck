@@ -284,9 +284,13 @@ impl Wayluck {
                 Change::Outline(scene, outline) => self.scenes.add_outline(scene, outline),
                 // The window manager's own windows don't take the keyboard.
                 Change::Focus(id) => {
-                    self.focus(id.filter(|id| {
+                    let id = id.filter(|id| {
                         self.windows.get(*id).is_some() && !self.windows.is_owned(*id)
-                    }))
+                    });
+                    self.focus(id);
+                    if let Some(id) = id {
+                        self.attention_seen(id);
+                    }
                 }
                 Change::Border(id, width, colors, radius) => {
                     if self.windows.get(id).is_some() {

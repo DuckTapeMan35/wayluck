@@ -42,10 +42,16 @@ use wayland_protocols::ext::background_effect::v1::client::{
     ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1,
     ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1,
 };
-use wayland_protocols::xdg::shell::client::{
-    xdg_surface::{self, XdgSurface},
-    xdg_toplevel::{self, XdgToplevel},
-    xdg_wm_base::{self, XdgWmBase},
+use wayland_protocols::xdg::{
+    activation::v1::client::{
+        xdg_activation_token_v1::{self, XdgActivationTokenV1},
+        xdg_activation_v1::XdgActivationV1,
+    },
+    shell::client::{
+        xdg_surface::{self, XdgSurface},
+        xdg_toplevel::{self, XdgToplevel},
+        xdg_wm_base::{self, XdgWmBase},
+    },
 };
 
 /// What the window has been told so far.
@@ -76,7 +82,12 @@ pub struct Window {
     /// once it asks.
     effects: Option<ExtBackgroundEffectManagerV1>,
     effect: OnceCell<ExtBackgroundEffectSurfaceV1>,
+    seat: WlSeat,
+    activation: Option<XdgActivationV1>,
 }
+
+/// A token being made: wayluck's answer, once it's come.
+type Token = Arc<Mutex<Option<String>>>;
 
 /// The window's side of the clipboard.
 #[derive(Default)]
@@ -116,6 +127,7 @@ impl Window {
         let manager: WlDataDeviceManager = globals.bind(&qh, 3..=3, ()).unwrap();
         let device = manager.get_data_device(&seat, &qh, ());
         let effects = globals.bind(&qh, 1..=1, ()).ok();
+        let activation = globals.bind(&qh, 1..=1, ()).ok();
         let surface = compositor.create_surface(&qh, ());
         let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
         let toplevel = xdg.get_toplevel(&qh, ());
@@ -147,12 +159,31 @@ impl Window {
             surface,
             effects,
             effect: OnceCell::new(),
+            activation,
+            seat,
         };
         wait_for(
             || window.seen().mapped.then_some(()),
             "the window to be mapped",
         );
         window
+    }
+
+    /// Ask to be brought forward (xdg-activation): with a token from its
+    /// last keyboard enter (with_input), or from nothing.
+    pub fn ask_activation(&self, with_input: bool) {
+        let activation = self.activation.as_ref().expect("no xdg_activation_v1");
+        let made: Token = Arc::default();
+        let token = activation.get_activation_token(&self.qh, made.clone());
+        if with_input {
+            token.set_serial(self.clip.lock().unwrap().serial, &self.seat);
+        }
+        token.set_surface(&self.surface);
+        token.commit();
+        self.conn.flush().unwrap();
+        let made = wait_for(|| made.lock().unwrap().clone(), "a token");
+        activation.activate(made, &self.surface);
+        self.conn.flush().unwrap();
     }
 
     /// Ask for what's behind it blurred, where rect is (x, y, width,
@@ -515,6 +546,7 @@ ignore!(
     WlRegion,
     ExtBackgroundEffectManagerV1,
     ExtBackgroundEffectSurfaceV1,
+    XdgActivationV1,
 );
 
 impl Dispatch<WlRegistry, GlobalListContents> for Client {
@@ -607,4 +639,19 @@ pub fn list_windows(session: &Session) -> Vec<(String, String)> {
     (lister.windows.into_iter())
         .map(|(_, title, app_id)| (title, app_id))
         .collect()
+}
+
+impl Dispatch<XdgActivationTokenV1, Token> for Client {
+    fn event(
+        _: &mut Self,
+        _: &XdgActivationTokenV1,
+        event: xdg_activation_token_v1::Event,
+        made: &Token,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_activation_token_v1::Event::Done { token } = event {
+            *made.lock().unwrap() = Some(token);
+        }
+    }
 }

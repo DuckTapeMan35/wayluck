@@ -35,20 +35,26 @@ pub enum Side {
 type Told = Cell<Option<Rectangle<i32, Logical>>>;
 
 impl Wayluck {
-    /// The part of output that layer surfaces' exclusive zones leave
-    /// windows, in global coordinates.
+    /// The part of output that layer surfaces' exclusive zones, and X
+    /// docks' struts, leave windows, in global coordinates.
     pub fn usable(&self, output: &Output) -> Option<Rectangle<i32, Logical>> {
         let area = self.space.output_geometry(output)?;
         let mut zone = layer_map_for_output(output).non_exclusive_zone();
         zone.loc += area.loc;
-        Some(zone)
+        Some(self.x_reserve(zone))
     }
 
-    /// output's layer surfaces changed: drawn anew, and if the room they
-    /// leave windows did too, the window manager hears (only then: a bar
-    /// redrawing its clock every second mustn't relayout the windows).
+    /// output's layer surfaces changed: drawn anew, and the room they
+    /// leave windows maybe too.
     pub fn layers_changed(&mut self, output: &Output) {
         self.queue_redraw();
+        self.usable_changed(output);
+    }
+
+    /// If the room output leaves windows changed, the window manager hears
+    /// (only then: a bar redrawing its clock every second mustn't relayout
+    /// the windows).
+    pub fn usable_changed(&mut self, output: &Output) {
         let usable = self.usable(output);
         output.user_data().insert_if_missing(Told::default);
         let told = output.user_data().get::<Told>().unwrap();

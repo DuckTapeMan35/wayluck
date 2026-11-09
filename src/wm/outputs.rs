@@ -7,7 +7,6 @@ use super::protocol::{
 };
 use crate::Wayluck;
 use smithay::{
-    desktop::{Space, Window, layer_map_for_output},
     output::Output,
     reexports::wayland_server::{
         Client, DataInit, Dispatch, DisplayHandle, Resource, backend::ClientId,
@@ -34,7 +33,7 @@ impl Wayluck {
             return false;
         };
         manager.share_workspace(&resource, scene);
-        send_output_state(&resource, output, &self.space);
+        send_output_state(&resource, output, self);
         self.wm.outputs.push((output.clone(), resource));
         true
     }
@@ -52,7 +51,7 @@ impl Wayluck {
             return;
         };
         manager.output(&resource);
-        send_output_state(&resource, output, &self.space);
+        send_output_state(&resource, output, self);
         self.wm.outputs.push((output.clone(), resource));
     }
 
@@ -60,7 +59,7 @@ impl Wayluck {
     pub fn wm_output_changed(&mut self, output: &Output) {
         for (o, resource) in &self.wm.outputs {
             if o == output {
-                send_output_state(resource, output, &self.space);
+                send_output_state(resource, output, self);
             }
         }
     }
@@ -81,17 +80,13 @@ impl Wayluck {
 }
 
 /// An output's name, geometry and usable area, then done.
-pub(super) fn send_output_state(
-    resource: &WayluckWmOutputV1,
-    output: &Output,
-    space: &Space<Window>,
-) {
+pub(super) fn send_output_state(resource: &WayluckWmOutputV1, output: &Output, state: &Wayluck) {
     resource.name(output.name());
-    if let Some(geo) = space.output_geometry(output) {
+    if let Some(geo) = state.space.output_geometry(output) {
         resource.geometry(geo.loc.x, geo.loc.y, geo.size.w, geo.size.h);
-        // What bars leave windows, in global coordinates.
-        let mut usable = layer_map_for_output(output).non_exclusive_zone();
-        usable.loc += geo.loc;
+    }
+    // What bars leave windows, in global coordinates.
+    if let Some(usable) = state.usable(output) {
         resource.usable(usable.loc.x, usable.loc.y, usable.size.w, usable.size.h);
     }
     resource.done();
