@@ -559,6 +559,11 @@ impl Border {
         )
     }
 
+    /// How far it reaches past the window, each side.
+    pub fn width(&self) -> u32 {
+        self.width.max(0) as u32
+    }
+
     /// It around content (in global coordinates), on an output whose top
     /// left is origin; None if it has no width (or can't be drawn).
     fn element<R: AsGles>(

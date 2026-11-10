@@ -7,8 +7,10 @@ use super::{
         wayluck_wm_layer_v1::WayluckWmLayerV1,
         wayluck_wm_manager_v1::WayluckWmManagerV1,
         wayluck_wm_transaction_v1::{self, WayluckWmTransactionV1},
+        wayluck_wm_workspace_v1,
     },
     scene_of,
+    workspaces::{State, WorkspaceChange, workspace_of},
 };
 use crate::{
     Wayluck,
@@ -166,6 +168,25 @@ impl Dispatch<WayluckWmTransactionV1, Transaction> for Wayluck {
                 look(&layer, LookChange::Shadow(spec))
             }
             Request::LayerBlur { layer, blur } => look(&layer, LookChange::Blur(mode_of(blur))),
+            Request::WorkspaceName { workspace, name } => Some(Change::Workspace(
+                workspace_of(&workspace),
+                WorkspaceChange::Name(name),
+            )),
+            Request::WorkspaceOutput { workspace, output } => {
+                let output = output.and_then(|o| o.data::<Output>().cloned());
+                Some(Change::Workspace(
+                    workspace_of(&workspace),
+                    WorkspaceChange::Output(output),
+                ))
+            }
+            Request::WorkspaceState { workspace, state } => Some(Change::Workspace(
+                workspace_of(&workspace),
+                WorkspaceChange::State(state_of(state)),
+            )),
+            Request::WindowWorkspace { window, workspace } => Some(Change::WindowWorkspace(
+                id_of(&window),
+                workspace.as_ref().map(workspace_of),
+            )),
             Request::StartFrom {
                 window,
                 x,
@@ -219,5 +240,19 @@ fn mode_of(blur: WEnum<wayluck_wm_transaction_v1::Blur>) -> Mode {
         Ok(wayluck_wm_transaction_v1::Blur::Off) => Mode::Off,
         Ok(wayluck_wm_transaction_v1::Blur::On) => Mode::On,
         Err(_) => Mode::Client,
+    }
+}
+
+/// A workspace's state, as a transaction says it (unknown bits left out).
+fn state_of(state: WEnum<wayluck_wm_workspace_v1::State>) -> State {
+    use wayluck_wm_workspace_v1::State as Bits;
+    let bits = match state {
+        WEnum::Value(bits) => bits,
+        WEnum::Unknown(bits) => Bits::from_bits_truncate(bits),
+    };
+    State {
+        active: bits.contains(Bits::Active),
+        urgent: bits.contains(Bits::Urgent),
+        hidden: bits.contains(Bits::Hidden),
     }
 }

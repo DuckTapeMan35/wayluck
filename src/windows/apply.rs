@@ -11,7 +11,11 @@ use crate::{
         rounded::Outline,
         shadow::{Shadow, Spec},
     },
-    wm::{protocol::wayluck_wm_transaction_v1::WayluckWmTransactionV1, scenes::SceneId},
+    wm::{
+        protocol::wayluck_wm_transaction_v1::WayluckWmTransactionV1,
+        scenes::SceneId,
+        workspaces::{WorkspaceChange, WorkspaceId},
+    },
 };
 use smithay::{
     output::Output,
@@ -30,6 +34,10 @@ pub enum Change {
     Place(SceneId, WindowId, Rectangle<i32, Logical>),
     /// How a layer surface looks (by its surface).
     Layer(WlSurface, LookChange),
+    /// What's said of a workspace.
+    Workspace(WorkspaceId, WorkspaceChange),
+    /// Which workspace a window is on (None: all).
+    WindowWorkspace(WindowId, Option<WorkspaceId>),
     /// Stop showing a window.
     Hide(WindowId),
     /// What an output shows: a scene, or nothing.
@@ -82,9 +90,19 @@ impl Wayluck {
             if scene.is_some_and(|s| !self.scenes.exists(s)) {
                 return Err("a scene in it is gone");
             }
+            let workspace = match change {
+                Change::Workspace(workspace, _) | Change::WindowWorkspace(_, Some(workspace)) => {
+                    Some(*workspace)
+                }
+                _ => None,
+            };
+            if workspace.is_some_and(|w| !self.workspaces.exists(w)) {
+                return Err("a workspace in it is gone");
+            }
             let id = match change {
                 Change::Place(_, id, _)
                 | Change::Hide(id)
+                | Change::WindowWorkspace(id, _)
                 | Change::Focus(Some(id))
                 | Change::Border(id, ..)
                 | Change::Shadow(id, _)
@@ -97,6 +115,7 @@ impl Wayluck {
                 | Change::Show(..)
                 | Change::SceneSize(..)
                 | Change::Layer(..)
+                | Change::Workspace(..)
                 | Change::Instant(None)
                 | Change::Outline(..)
                 | Change::Outlines(_) => continue,
@@ -174,6 +193,8 @@ impl Wayluck {
                 | Change::Shadow(..)
                 | Change::Blur(..)
                 | Change::Layer(..)
+                | Change::Workspace(..)
+                | Change::WindowWorkspace(..)
                 | Change::Show(..)
                 | Change::Instant(_)
                 | Change::StartFrom(..)
@@ -285,6 +306,7 @@ impl Wayluck {
             }
         }
         self.sync_space();
+        let mut workspaces_changed = false;
         for change in changes {
             match change {
                 Change::Outlines(scene) => self.scenes.clear_outlines(scene),
@@ -306,6 +328,7 @@ impl Wayluck {
                             .entry(id)
                             .and_modify(|b| b.set(width, colors, radius))
                             .or_insert_with(|| Border::new(width, colors, radius));
+                        self.x_frame_changed(id);
                     }
                 }
                 Change::Shadow(id, spec) => {
@@ -320,6 +343,16 @@ impl Wayluck {
                 Change::Layer(surface, change) => {
                     if surface.is_alive() {
                         self.layer_looks.entry(surface).or_default().change(change);
+                    }
+                }
+                Change::Workspace(id, change) => {
+                    self.workspaces.change(id, change);
+                    workspaces_changed = true;
+                }
+                Change::WindowWorkspace(id, workspace) => {
+                    if self.windows.get(id).is_some() {
+                        self.windows.set_workspace(id, workspace);
+                        workspaces_changed = true;
                     }
                 }
                 Change::Blur(id, mode) => {
@@ -342,6 +375,9 @@ impl Wayluck {
                 | Change::Instant(_)
                 | Change::StartFrom(..) => {} // told already
             }
+        }
+        if workspaces_changed {
+            self.x_workspaces_changed();
         }
     }
 

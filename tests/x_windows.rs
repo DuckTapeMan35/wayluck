@@ -42,6 +42,18 @@ fn x_programs_get_in_only_by_the_door() {
 }
 
 #[test]
+fn the_door_reaches_xwayland_whatever_becomes_of_its_socket_file() {
+    let mut session = Session::start();
+    let _wm = Wm::start(&session);
+    let _x = XWindow::open(&session.x_display, "xwin", "XApp", (200, 200));
+    let answer = session.command("xwayland");
+    let xwayland = answer.strip_prefix("running :").expect("Xwayland running");
+    // Another X server, taking its display by mistake, removes it.
+    std::fs::remove_file(format!("/tmp/.X11-unix/X{xwayland}")).unwrap();
+    assert!(RustConnection::connect(Some(&session.x_display)).is_ok());
+}
+
+#[test]
 fn a_program_let_in_cant_let_others_in() {
     let mut session = Session::start();
     let _wm = Wm::start(&session);

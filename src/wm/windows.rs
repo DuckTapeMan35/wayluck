@@ -2,7 +2,10 @@
 //! clients set up and change (names, parent, size limits), and what they
 //! ask for (focus, fullscreen). It may ask a window to close.
 
-use super::protocol::wayluck_wm_window_v1::{self, WayluckWmWindowV1};
+use super::{
+    protocol::wayluck_wm_window_v1::{self, WayluckWmWindowV1},
+    workspaces::WorkspaceId,
+};
 use crate::{
     Wayluck,
     windows::{self, Kind, WindowId},
@@ -139,6 +142,22 @@ impl Wayluck {
         if let Some(resource) = self.wm.windows.get(&id) {
             resource.activate_request();
         }
+    }
+
+    /// Something asked for window id to be on workspace (None: all): the
+    /// window manager hears so, and decides.
+    pub fn wm_workspace_request(&self, id: WindowId, workspace: Option<WorkspaceId>) {
+        let Some(resource) = self.wm.windows.get(&id) else {
+            return;
+        };
+        let workspace = match workspace {
+            Some(workspace) => match self.workspaces.object(workspace) {
+                Some(object) => Some(object),
+                None => return,
+            },
+            None => None,
+        };
+        resource.workspace_request(workspace);
     }
 
     /// How its client would like it kept, if that changed since the window

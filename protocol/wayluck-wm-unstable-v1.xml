@@ -52,6 +52,18 @@
       </description>
       <arg name="id" type="new_id" interface="wayluck_wm_scene_v1"/>
     </request>
+
+    <request name="workspace">
+      <description summary="make a workspace, for programs that list them">
+        A workspace as programs that list them (bars, pagers) see it: what
+        it shows is the window manager's own business (scenes), this is
+        only what's said of it. Listed from now on, after those made
+        before it: unnamed, on no output and not active, until transactions
+        say otherwise. Destroyed, it's no longer listed.
+      </description>
+      <arg name="id" type="new_id" interface="wayluck_wm_workspace_v1"/>
+    </request>
+
     <request name="virtual_output">
       <description summary="make an output with no screen behind it">
         Clients see it as any other output (wl_output): screen sharing and
@@ -216,6 +228,15 @@
       </description>
       <arg name="passes" type="uint"/>
       <arg name="offset" type="fixed"/>
+    </request>
+
+    <request name="set_name">
+      <description summary="the window manager's name, for programs that ask">
+        Programs that ask which window manager runs (X's, as EWMH has it)
+        are told this name. Until it's set, and once the window manager is
+        gone: wayluck.
+      </description>
+      <arg name="name" type="string"/>
     </request>
 
     <enum name="error">
@@ -528,6 +549,15 @@
       <arg name="on" type="uint" summary="1: it does, 0: it no longer does"/>
     </event>
 
+    <event name="workspace_request">
+      <description summary="it's asked to be on a workspace">
+        A program asked (a pager, or the window's own, by X's
+        _NET_WM_DESKTOP) for it to be on workspace; null: on all of them.
+        The window manager decides: window_workspace, or not.
+      </description>
+      <arg name="workspace" type="object" interface="wayluck_wm_workspace_v1" allow-null="true"/>
+    </event>
+
     <event name="activate_request">
       <description summary="it's asked to be brought forward">
         Its client asked, with the right to: a Wayland client with a token
@@ -817,6 +847,35 @@
       <arg name="blur" type="uint" enum="blur"/>
     </request>
 
+    <request name="workspace_name">
+      <description summary="name a workspace"/>
+      <arg name="workspace" type="object" interface="wayluck_wm_workspace_v1"/>
+      <arg name="name" type="string"/>
+    </request>
+
+    <request name="workspace_output">
+      <description summary="say which output a workspace is on">
+        Null: none in particular.
+      </description>
+      <arg name="workspace" type="object" interface="wayluck_wm_workspace_v1"/>
+      <arg name="output" type="object" interface="wayluck_wm_output_v1" allow-null="true"/>
+    </request>
+
+    <request name="workspace_state">
+      <description summary="say what state a workspace is in"/>
+      <arg name="workspace" type="object" interface="wayluck_wm_workspace_v1"/>
+      <arg name="state" type="uint" enum="wayluck_wm_workspace_v1.state"/>
+    </request>
+
+    <request name="window_workspace">
+      <description summary="say which workspace a window is on">
+        Null: on all of them. Until it's told, and once its workspace is
+        destroyed, nothing is said of it.
+      </description>
+      <arg name="window" type="object" interface="wayluck_wm_window_v1"/>
+      <arg name="workspace" type="object" interface="wayluck_wm_workspace_v1" allow-null="true"/>
+    </request>
+
     <event name="applied">
       <description summary="the changes are on screen"/>
     </event>
@@ -874,6 +933,30 @@
 
     <event name="closed">
       <description summary="it's gone; destroy it"/>
+    </event>
+  </interface>
+
+  <interface name="wayluck_wm_workspace_v1" version="1">
+    <description summary="a workspace, as programs that list them see it">
+      Made by the manager's workspace request; what's said of it, by
+      transactions.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="it's no longer listed"/>
+    </request>
+
+    <enum name="state" bitfield="true">
+      <entry name="active" value="1" summary="shown on its output"/>
+      <entry name="urgent" value="2" summary="something on it wants attention"/>
+      <entry name="hidden" value="4" summary="better not listed"/>
+    </enum>
+
+    <event name="activate_request">
+      <description summary="it's asked to be shown">
+        A program asked: a bar or a pager, by X's _NET_CURRENT_DESKTOP. The
+        window manager decides: show it, or not.
+      </description>
     </event>
   </interface>
 </protocol>

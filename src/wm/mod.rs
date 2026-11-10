@@ -10,6 +10,7 @@ pub mod scenes;
 mod transaction;
 pub mod virtual_output;
 mod windows;
+pub mod workspaces;
 
 pub use bindings::modifier_bits;
 
@@ -47,6 +48,7 @@ const VERSION: u32 = 1;
 #[derive(Default)]
 pub struct WmState {
     pub manager: Option<WayluckWmManagerV1>,
+    pub name: Option<String>,
     outputs: Vec<(Output, WayluckWmOutputV1)>,
     windows: HashMap<WindowId, WayluckWmWindowV1>,
     /// Its objects for layer surfaces, by their surface.
@@ -122,6 +124,15 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
             // (its transactions aren't applied).
             wayluck_wm_manager_v1::Request::Scene { id } => {
                 data_init.init(id, state.scenes.add());
+            }
+            // An unavailable manager's workspaces aren't listed.
+            wayluck_wm_manager_v1::Request::Workspace { id } => {
+                let workspace = state.workspaces.new_id();
+                let object = data_init.init(id, workspace);
+                if state.wm.manager.as_ref() == Some(manager) {
+                    state.workspaces.add(workspace, object);
+                    state.x_workspaces_changed();
+                }
             }
             wayluck_wm_manager_v1::Request::VirtualOutput {
                 id,
@@ -244,6 +255,12 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
                     state.windows.set_animation(None, Some(setting));
                 }
             }
+            wayluck_wm_manager_v1::Request::SetName { name } => {
+                if state.wm.manager.as_ref() == Some(manager) {
+                    state.wm.name = Some(name);
+                    state.x_name_changed();
+                }
+            }
             wayluck_wm_manager_v1::Request::SetBlur { passes, offset } => {
                 let Some(strength) = Strength::new(passes, offset as f32) else {
                     manager.post_error(
@@ -269,6 +286,12 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
             state.configure_waiting();
             state.show_pending();
             state.show_own_scene();
+            // Its name goes with it.
+            state.x_name_changed();
+            // Its name and workspaces go with it.
+            state.workspaces.clear();
+            state.x_name_changed();
+            state.x_workspaces_changed();
         }
     }
 }

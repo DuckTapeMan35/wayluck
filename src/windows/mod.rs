@@ -20,7 +20,10 @@ use crate::{
         rounded::ClipIds,
         shadow::Shadow,
     },
-    wm::scenes::{self, SceneId},
+    wm::{
+        scenes::{self, SceneId},
+        workspaces::WorkspaceId,
+    },
 };
 pub use animation::{Curve, Setting};
 pub use apply::Change;
@@ -109,6 +112,8 @@ pub struct Windows {
     /// (None: they don't), and for some on their own.
     animation: Option<Setting>,
     animation_of: HashMap<WindowId, Setting>,
+    /// The workspace the window manager says each is on (None: all).
+    workspaces: HashMap<WindowId, Option<WorkspaceId>>,
     next: u32,
 }
 
@@ -186,6 +191,13 @@ impl Windows {
             .map(|(id, _)| *id)
     }
 
+    /// The window X window is (by its id), if it's shown.
+    pub fn find_x11_window(&self, window: u32) -> Option<WindowId> {
+        (self.by_id.iter())
+            .find(|(_, w)| w.x11_surface().is_some_and(|x| x.window_id() == window))
+            .map(|(id, _)| *id)
+    }
+
     pub fn remove(&mut self, id: WindowId) -> Option<Window> {
         if self.focused == Some(id) {
             self.focused = None;
@@ -193,6 +205,7 @@ impl Windows {
         self.fullscreen.remove(&id);
         self.owned.remove(&id);
         self.borders.remove(&id);
+        self.workspaces.remove(&id);
         self.shadows.remove(&id);
         self.blurs.remove(&id);
         self.asked_attention.remove(&id);
@@ -289,6 +302,10 @@ impl Windows {
         self.owned.contains(&id)
     }
 
+    pub fn border(&self, id: WindowId) -> Option<&Border> {
+        self.borders.get(&id)
+    }
+
     pub fn border_mut(&mut self, id: WindowId) -> Option<&mut Border> {
         self.borders.get_mut(&id)
     }
@@ -317,6 +334,16 @@ impl Windows {
 
     pub fn ids(&self) -> impl Iterator<Item = WindowId> + '_ {
         self.by_id.keys().copied()
+    }
+
+    /// Say which workspace a window is on (None: all).
+    pub fn set_workspace(&mut self, id: WindowId, workspace: Option<WorkspaceId>) {
+        self.workspaces.insert(id, workspace);
+    }
+
+    /// The windows said to be on a workspace, and which (None: all).
+    pub fn workspaces(&self) -> impl Iterator<Item = (WindowId, Option<WorkspaceId>)> + '_ {
+        self.workspaces.iter().map(|(id, w)| (*id, *w))
     }
 
     /// Did the window manager make it fullscreen?

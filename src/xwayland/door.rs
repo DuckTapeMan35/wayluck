@@ -41,6 +41,9 @@ use std::{
     thread,
 };
 
+/// How many X displays there are to choose from.
+pub(super) const DISPLAYS: u32 = 33;
+
 /// The most file descriptors one read brings (X sends a few at a time).
 const MOST_FDS: usize = 16;
 
@@ -87,20 +90,27 @@ pub struct Door {
     _lock: Lock,
 }
 
+/// How to reach Xwayland as the door does (its display, the door's key),
+/// from any thread.
+#[derive(Clone, Copy)]
+pub(super) struct Way {
+    xwayland: u32,
+    key: Option<Key>,
+}
+
 impl Wayluck {
     /// Open wayluck's X display (the first one free), for programs started
     /// from now on (DISPLAY, session_env). Xwayland starts when one connects.
     pub fn open_x_door(&mut self, handle: &LoopHandle<'static, Wayluck>) {
-        let opened = (0..33).find_map(|n| Some((n, Lock::take(n)?)));
-        let Some((number, lock)) = opened else {
+        let opened = (0..DISPLAYS).find_map(|n| {
+            let claimed = claim(n)?;
+            Some((n, claimed, Lock::take(n)?))
+        });
+        let Some((number, claimed, lock)) = opened else {
             return tracing::warn!("no X clients: every X display is taken");
         };
         let path = format!("/tmp/.X11-unix/X{number}");
-        let listeners = [
-            UnixListener::bind(&path),
-            SocketAddr::from_abstract_name(path.as_bytes())
-                .and_then(|a| UnixListener::bind_addr(&a)),
-        ];
+        let listeners = [UnixListener::bind(&path), Ok(claimed)];
         for listener in listeners {
             let listener = match listener.and_then(|l| l.set_nonblocking(true).map(|_| l)) {
                 Ok(listener) => listener,
@@ -192,10 +202,13 @@ impl Wayluck {
         door.authority = None;
         door.xwayland = Some(xwayland);
         let said = door.said.clone();
-        let key = door.key;
+        let way = Way {
+            xwayland,
+            key: door.key,
+        };
         let looked_up = thread::Builder::new()
             .name("X lookups".into())
-            .spawn(move || said.send(Said::Ready(known(xwayland, key.as_ref()))));
+            .spawn(move || said.send(Said::Ready(known(way))));
         if let Err(e) = looked_up {
             tracing::warn!("can't look up what the door needs to know of X: {e}");
             self.x_door_ready(None);
@@ -226,14 +239,8 @@ impl Wayluck {
 
 /// Xwayland's numbers for the atoms wayluck reads requests for, and for
 /// the extensions whose requests it turns down.
-fn known(xwayland: u32, key: Option<&Key>) -> Option<Known> {
-    let stream = UnixStream::connect(format!("/tmp/.X11-unix/X{xwayland}")).ok()?;
-    let (stream, _) = DefaultStream::from_unix_stream(stream).ok()?;
-    let (name, data) = match key {
-        Some(key) => (COOKIE_NAME.to_vec(), key.cookie.to_vec()),
-        None => (Vec::new(), Vec::new()),
-    };
-    let conn = RustConnection::connect_to_stream_with_auth_info(stream, 0, name, data).ok()?;
+fn known(way: Way) -> Option<Known> {
+    let conn = way.connect()?;
     let atom = |name: &str| {
         let reply = conn
             .intern_atom(false, name.as_bytes())
@@ -260,8 +267,7 @@ fn pass_through(
     key: Option<Key>,
     said: &Sender<Said>,
 ) {
-    let path = format!("/tmp/.X11-unix/X{xwayland}");
-    let server = match UnixStream::connect(&path) {
+    let server = match reach(xwayland) {
         Ok(server) => server,
         Err(e) => return tracing::warn!("can't reach Xwayland at :{xwayland}: {e}"),
     };
@@ -436,6 +442,49 @@ impl Door {
     pub fn xwayland(&self) -> Option<u32> {
         self.xwayland
     }
+
+    /// How to reach Xwayland, once it's ready.
+    pub(super) fn way(&self) -> Option<Way> {
+        Some(Way {
+            xwayland: self.xwayland?,
+            key: self.key,
+        })
+    }
+}
+
+impl Way {
+    /// A connection of wayluck's own to Xwayland.
+    pub(super) fn connect(self) -> Option<RustConnection> {
+        let stream = reach(self.xwayland).ok()?;
+        let (stream, _) = DefaultStream::from_unix_stream(stream).ok()?;
+        let (name, data) = match self.key {
+            Some(key) => (COOKIE_NAME.to_vec(), key.cookie.to_vec()),
+            None => (Vec::new(), Vec::new()),
+        };
+        RustConnection::connect_to_stream_with_auth_info(stream, 0, name, data).ok()
+    }
+}
+
+/// Display number's abstract socket (the name X servers on Linux listen
+/// at, beside their socket file), listened on: if no live process has it,
+/// and its lock file is free or its holder gone. Only one process can hold
+/// it, and it goes with its holder: no other wayluck takes the display
+/// while it's held, whatever lock files are left behind.
+pub(super) fn claim(number: u32) -> Option<UnixListener> {
+    let claimed = UnixListener::bind_addr(&abstract_name(number).ok()?).ok()?;
+    let lock = format!("/tmp/.X{number}-lock");
+    let locked = fs::exists(&lock).unwrap_or(true) && !holder_gone(&lock);
+    (!locked).then_some(claimed)
+}
+
+/// Xwayland, at display number's abstract socket: wayluck claimed it for
+/// Xwayland, so it's there whatever becomes of socket files.
+fn reach(number: u32) -> io::Result<UnixStream> {
+    UnixStream::connect_addr(&abstract_name(number)?)
+}
+
+fn abstract_name(number: u32) -> io::Result<SocketAddr> {
+    SocketAddr::from_abstract_name(format!("/tmp/.X11-unix/X{number}").as_bytes())
 }
 
 /// An X display's lock file (/tmp/.X<n>-lock, the holder's pid in it): the
@@ -479,5 +528,40 @@ impl Drop for Lock {
     fn drop(&mut self) {
         let _ = fs::remove_file(format!("/tmp/.X11-unix/X{}", self.number));
         let _ = fs::remove_file(format!("/tmp/.X{}-lock", self.number));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Displays near the end, which nothing else here takes.
+
+    #[test]
+    fn a_display_whose_socket_is_held_isnt_claimed() {
+        let held = UnixListener::bind_addr(&abstract_name(32).unwrap()).unwrap();
+        assert!(claim(32).is_none());
+        drop(held);
+        assert!(claim(32).is_some());
+    }
+
+    #[test]
+    fn a_display_locked_by_a_live_process_isnt_claimed() {
+        let lock = "/tmp/.X31-lock";
+        let pid = rustix::process::getpid().as_raw_nonzero();
+        fs::write(lock, format!("{pid:>10}\n")).unwrap();
+        let claimed = claim(31);
+        fs::remove_file(lock).unwrap();
+        assert!(claimed.is_none());
+    }
+
+    #[test]
+    fn a_display_locked_by_a_gone_process_is_claimed() {
+        let lock = "/tmp/.X30-lock";
+        // Past the kernel's largest pid: no process has it.
+        fs::write(lock, format!("{:>10}\n", 4_194_305)).unwrap();
+        let claimed = claim(30);
+        fs::remove_file(lock).unwrap();
+        assert!(claimed.is_some());
     }
 }

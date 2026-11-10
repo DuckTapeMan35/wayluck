@@ -6,6 +6,7 @@
 
 mod docks;
 mod door;
+mod hints;
 mod menus;
 mod requests;
 mod selection;
@@ -14,6 +15,7 @@ mod windows;
 
 use crate::{Wayluck, input::KeyboardFocus};
 pub use door::Door;
+pub use hints::Hints;
 use rustix::io::FdFlags;
 pub use selection::WaylandSelections;
 use smithay::{
@@ -29,7 +31,7 @@ use smithay::{
     },
 };
 use std::{
-    os::fd::{AsRawFd, OwnedFd},
+    os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd},
     process::Stdio,
 };
 pub use struts::Strut;
@@ -38,37 +40,48 @@ impl Wayluck {
     /// Start Xwayland (on its own display number, behind wayluck's: the
     /// door), and be its window manager once it's ready.
     fn start_xwayland(&mut self, handle: &LoopHandle<'static, Wayluck>) {
+        // Its display is claimed as the door's is, so no other wayluck takes
+        // it: Xwayland listens where it's claimed (where wayluck reaches
+        // it), and smithay makes its socket file and lock file.
+        let claimed = (0..door::DISPLAYS).find_map(|n| Some((n, door::claim(n)?)));
+        let Some((number, claimed)) = claimed else {
+            tracing::warn!("no X clients: every X display is taken");
+            return self.x_door_turn_away();
+        };
         // Only the door may connect: by the cookie in the file in memory
         // Xwayland's given (as its own descriptor, from its own /proc/self;
         // kept from the programs wayluck starts, but for this one).
         let authority = self.x_authority().map(|fd| fd.try_clone_to_owned());
         let authority = authority.and_then(|fd| fd.ok());
-        let given = |closed_on_exec: bool| {
-            let flags = if closed_on_exec {
-                FdFlags::CLOEXEC
-            } else {
+        let given: Vec<BorrowedFd> = (authority.iter().map(|fd| fd.as_fd()))
+            .chain([claimed.as_fd()])
+            .collect();
+        let kept_on_exec = |kept: bool| {
+            let flags = if kept {
                 FdFlags::empty()
+            } else {
+                FdFlags::CLOEXEC
             };
-            authority
-                .as_ref()
-                .map(|fd| rustix::io::fcntl_setfd(fd, flags))
+            for fd in &given {
+                let _ = rustix::io::fcntl_setfd(fd, flags);
+            }
         };
-        given(false);
         let file = (authority.as_ref()).map(|fd| format!("/proc/self/fd/{}", fd.as_raw_fd()));
-        let args = file
-            .into_iter()
-            .flat_map(|file| ["-auth".to_string(), file]);
+        let args = (file.into_iter())
+            .flat_map(|file| ["-auth".to_string(), file])
+            .chain(["-listenfd".to_string(), claimed.as_raw_fd().to_string()]);
+        kept_on_exec(true);
         let spawned = XWayland::spawn(
             &self.display_handle,
-            None,
+            number,
             std::iter::empty::<(String, String)>(),
             args,
-            true,
+            false,
             Stdio::null(),
             Stdio::inherit(),
             |_| (),
         );
-        given(true);
+        kept_on_exec(false);
         let (xwayland, client) = match spawned {
             Ok(spawned) => spawned,
             Err(e) => {
@@ -87,6 +100,7 @@ impl Wayluck {
                         state.xwm = Some(wm);
                         selection::ready(state);
                         state.x_door_open(number);
+                        state.x_hints_start();
                     }
                     Err(e) => {
                         tracing::warn!("can't be Xwayland's window manager: {e}");

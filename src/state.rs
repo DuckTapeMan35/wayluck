@@ -101,6 +101,8 @@ pub struct Wayluck {
     pub windows: Windows,
     /// Where windows are: in scenes, shown on outputs.
     pub scenes: Scenes,
+    /// The window manager's workspaces, as programs that list them see them.
+    pub workspaces: crate::wm::workspaces::Workspaces,
     /// wayluck's own scene, shown when there's no window manager.
     pub own_scene: SceneId,
     /// Outputs with no screen behind them.
@@ -142,6 +144,8 @@ pub struct Wayluck {
     pub x_display: Option<OsString>,
     /// Where X programs connect, and wait until Xwayland is ready.
     pub x_door: Option<crate::xwayland::Door>,
+    /// What X programs are told of their window manager, once Xwayland's ready.
+    pub x_hints: Option<crate::xwayland::Hints>,
     pub dmabuf_state: DmabufState,
     /// Explicit sync, if the GPU's driver can.
     pub syncobj_state: Option<DrmSyncobjState>,
@@ -234,6 +238,7 @@ impl Wayluck {
             wayland_selections: WaylandSelections::default(),
             x_display: None,
             x_door: None,
+            x_hints: None,
             layer_looks: HashMap::new(),
             // Its global is made by the backend, which knows the formats.
             dmabuf_state: DmabufState::new(),
@@ -243,6 +248,7 @@ impl Wayluck {
             seat,
             windows: Windows::default(),
             scenes,
+            workspaces: Default::default(),
             own_scene,
             virtuals: Vec::new(),
             virtual_count: 0,

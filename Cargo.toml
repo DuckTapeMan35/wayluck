@@ -61,9 +61,13 @@ required-features = ["test-harness"]
 name = "blur"
 required-features = ["test-harness"]
 
- [[test]]
- name = "layers"
- required-features = ["test-harness"]
+[[test]]
+name = "layers"
+required-features = ["test-harness"]
+
+[[test]]
+name = "x_hints"
+required-features = ["test-harness"]
 
 [features]
 # For wayluck's tests (tests/): a headless backend (--headless), and later

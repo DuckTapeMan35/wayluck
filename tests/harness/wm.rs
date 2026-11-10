@@ -43,7 +43,15 @@ use protocol::{
     wayluck_wm_scene_v1::{self, WayluckWmSceneV1},
     wayluck_wm_transaction_v1::{self, WayluckWmTransactionV1},
     wayluck_wm_window_v1::{self, WayluckWmWindowV1},
+    wayluck_wm_workspace_v1::{self, WayluckWmWorkspaceV1},
 };
+
+/// A window to place: its id, where (x, y, width, height), and whether
+/// instantly.
+pub type Placing = (u32, (i32, i32, i32, i32), bool);
+
+/// A window manager's workspaces, by name.
+type Workspaces = Arc<Mutex<Vec<(String, WayluckWmWorkspaceV1)>>>;
 
 /// Where it places every window, in its scene (x, y, width, height).
 pub const PLACE: (i32, i32, i32, i32) = (100, 100, 400, 300);
@@ -55,6 +63,8 @@ pub struct Heard {
     pub id: u32,
     pub title: String,
     pub app_id: String,
+    /// The workspaces it’s been asked to be on, by name (None: all)
+    pub workspace_requests: Vec<Option<String>>,
     /// Its parent's id, if it has one.
     pub parent: Option<u32>,
     /// min width, min height, max width, max height (0: no limit).
@@ -101,6 +111,8 @@ struct Log {
     usable: Option<(i32, i32, i32, i32)>,
     /// Layer surfaces, as heard of.
     layers: Vec<HeardLayer>,
+    /// The workspaces asked to be shown, by name, in order
+    workspaces_asked: Vec<String>,
 }
 
 pub struct Wm {
@@ -110,6 +122,7 @@ pub struct Wm {
     windows: Arc<Mutex<Vec<(WayluckWmWindowV1, u32)>>>,
     manager: WayluckWmManagerV1,
     layers: Arc<Mutex<Vec<WayluckWmLayerV1>>>,
+    workspaces: Workspaces,
     /// Its one scene.
     scene: WayluckWmSceneV1,
 }
@@ -127,12 +140,14 @@ impl Wm {
         let windows = Arc::new(Mutex::new(Vec::new()));
         let scene = manager.scene(&qh, ());
         let layers = Arc::new(Mutex::default());
+        let workspaces = Workspaces::default();
         let mut client = Client {
             output: None,
             log: log.clone(),
             windows: windows.clone(),
             scene: scene.clone(),
             layers: layers.clone(),
+            workspaces: workspaces.clone(),
         };
         std::thread::spawn(move || {
             // Until wayluck goes, at the end of the test.
@@ -146,6 +161,7 @@ impl Wm {
             manager,
             scene,
             layers,
+            workspaces,
         };
         wait_for(
             || wm.log.lock().unwrap().ready.then_some(()),
@@ -246,6 +262,11 @@ impl Wm {
             None => window.unset_animation(),
         }
         self.conn.flush().unwrap();
+    }
+
+    /// The workspaces asked to be shown so far, by name, in order.
+    pub fn workspaces_asked(&self) -> Vec<String> {
+        self.log.lock().unwrap().workspaces_asked.clone()
     }
 
     /// Cut the layer surface called namespace's corners off, rounded radius
@@ -369,6 +390,75 @@ impl Wm {
         self.conn.flush().unwrap();
     }
 
+    /// Give window id a border width pixels wide, all in color.
+    pub fn border(&self, id: u32, width: u32, color: u32) {
+        let tx = self.manager.transaction(&self.qh, ());
+        tx.border(&self.proxy(id), width, color, color, color, color, 0);
+        tx.commit();
+        self.conn.flush().unwrap();
+    }
+
+    /// Stop being the window manager.
+    pub fn quit(self) {
+        self.manager.destroy();
+        self.conn.flush().unwrap();
+    }
+
+    /// The name programs are told it has.
+    pub fn set_name(&self, name: &str) {
+        self.manager.set_name(name.into());
+        self.conn.flush().unwrap();
+    }
+
+    /// Make a workspace called name, listed after those made before.
+    pub fn add_workspace(&self, name: &str) {
+        let workspace = self.manager.workspace(&self.qh, ());
+        let tx = self.manager.transaction(&self.qh, ());
+        tx.workspace_name(&workspace, name.into());
+        tx.commit();
+        self.conn.flush().unwrap();
+        self.workspaces
+            .lock()
+            .unwrap()
+            .push((name.into(), workspace));
+    }
+
+    /// Make the workspace called name the active one, and the others not.
+    pub fn activate_workspace(&self, name: &str) {
+        let tx = self.manager.transaction(&self.qh, ());
+        for (n, workspace) in self.workspaces.lock().unwrap().iter() {
+            let state = if n == name {
+                wayluck_wm_workspace_v1::State::Active
+            } else {
+                wayluck_wm_workspace_v1::State::empty()
+            };
+            tx.workspace_state(workspace, state);
+        }
+        tx.commit();
+        self.conn.flush().unwrap();
+    }
+
+    /// Destroy the workspace called name.
+    pub fn remove_workspace(&self, name: &str) {
+        let mut workspaces = self.workspaces.lock().unwrap();
+        let at = workspaces.iter().position(|(n, _)| n == name).unwrap();
+        workspaces.remove(at).1.destroy();
+        self.conn.flush().unwrap();
+    }
+
+    /// Say window id is on the workspace called name (None: all).
+    pub fn window_workspace(&self, id: u32, name: Option<&str>) {
+        let workspaces = self.workspaces.lock().unwrap();
+        let workspace = name.map(|name| {
+            let found = workspaces.iter().find(|(n, _)| n == name);
+            found.unwrap().1.clone()
+        });
+        let tx = self.manager.transaction(&self.qh, ());
+        tx.window_workspace(&self.proxy(id), workspace.as_ref());
+        tx.commit();
+        self.conn.flush().unwrap();
+    }
+
     fn proxy(&self, id: u32) -> WayluckWmWindowV1 {
         let windows = self.windows.lock().unwrap();
         let (proxy, _) = windows
@@ -378,10 +468,6 @@ impl Wm {
         proxy.clone()
     }
 }
-
-/// A window to place: its id, where (x, y, width, height), and whether
-/// instantly.
-pub type Placing = (u32, (i32, i32, i32, i32), bool);
 
 /// A curve's values as the protocol carries them: 32-bit floats in the
 /// machine's byte order.
@@ -397,6 +483,7 @@ struct Client {
     windows: Arc<Mutex<Vec<(WayluckWmWindowV1, u32)>>>,
     /// Its objects for layer surfaces, in the order heard of (as in its log).
     layers: Arc<Mutex<Vec<WayluckWmLayerV1>>>,
+    workspaces: Workspaces,
 }
 
 impl Client {
@@ -414,6 +501,13 @@ impl Client {
     fn id_of(&self, proxy: &WayluckWmWindowV1) -> Option<u32> {
         let windows = self.windows.lock().unwrap();
         windows.iter().find(|(p, _)| p == proxy).map(|(_, id)| *id)
+    }
+
+    /// The name of the workspace behind proxy.
+    fn workspace_name(&self, proxy: &WayluckWmWorkspaceV1) -> Option<String> {
+        let workspaces = self.workspaces.lock().unwrap();
+        let found = workspaces.iter().find(|(_, w)| w == proxy);
+        found.map(|(name, _)| name.clone())
     }
 }
 
@@ -494,6 +588,12 @@ impl Dispatch<WayluckWmWindowV1, ()> for Client {
             Event::Parent { parent } => Some(parent.as_ref().and_then(|p| client.id_of(p))),
             _ => None,
         };
+        let workspace = match &event {
+            Event::WorkspaceRequest { workspace } => {
+                workspace.as_ref().and_then(|w| client.workspace_name(w))
+            }
+            _ => None,
+        };
         client.heard(proxy, |heard| match event {
             Event::Title { title } => heard.title = title,
             Event::AppId { app_id } => heard.app_id = app_id,
@@ -511,6 +611,7 @@ impl Dispatch<WayluckWmWindowV1, ()> for Client {
             Event::Hints { hints } => heard.hints = hints.into_result().ok().map(|h| h.bits()),
             Event::Attention { on } => heard.attention = Some(on != 0),
             Event::ActivateRequest => heard.activate_requests += 1,
+            Event::WorkspaceRequest { .. } => heard.workspace_requests.push(workspace),
             Event::Done => {
                 if heard.dones == 0 {
                     heard.at_first_done = Some(Box::new(heard.clone()));
@@ -595,6 +696,22 @@ impl Dispatch<WayluckWmSceneV1, ()> for Client {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+    }
+}
+
+impl Dispatch<WayluckWmWorkspaceV1, ()> for Client {
+    fn event(
+        client: &mut Self,
+        proxy: &WayluckWmWorkspaceV1,
+        event: wayluck_wm_workspace_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let wayluck_wm_workspace_v1::Event::ActivateRequest = event;
+        if let Some(name) = client.workspace_name(proxy) {
+            client.log.lock().unwrap().workspaces_asked.push(name);
+        }
     }
 }
 
