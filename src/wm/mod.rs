@@ -10,6 +10,7 @@ pub mod scenes;
 mod transaction;
 pub mod virtual_output;
 mod windows;
+pub mod workspace_list;
 pub mod workspaces;
 
 pub use bindings::modifier_bits;
@@ -131,7 +132,7 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
                 let object = data_init.init(id, workspace);
                 if state.wm.manager.as_ref() == Some(manager) {
                     state.workspaces.add(workspace, object);
-                    state.x_workspaces_changed();
+                    state.workspaces_changed();
                 }
             }
             wayluck_wm_manager_v1::Request::VirtualOutput {
@@ -291,7 +292,7 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
             // Its name and workspaces go with it.
             state.workspaces.clear();
             state.x_name_changed();
-            state.x_workspaces_changed();
+            state.workspaces_changed();
         }
     }
 }

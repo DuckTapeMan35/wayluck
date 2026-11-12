@@ -10,12 +10,18 @@ use smithay::{
     output::Output,
     reexports::wayland_server::{
         Client, DataInit, Dispatch, DisplayHandle, Resource, backend::ClientId,
+        protocol::wl_output::WlOutput,
     },
     wayland::output::OutputHandler,
 };
 
 // wl_output: wayluck's outputs, as clients see them.
-impl OutputHandler for Wayluck {}
+impl OutputHandler for Wayluck {
+    /// Bars hear which workspaces are on it.
+    fn output_bound(&mut self, _output: Output, _wl_output: WlOutput) {
+        self.workspace_list_changed();
+    }
+}
 
 impl Wayluck {
     /// A virtual output made to share a workspace: the window

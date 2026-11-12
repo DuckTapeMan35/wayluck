@@ -11,6 +11,7 @@ use crate::{
         WmState,
         scenes::{SceneId, Scenes},
         virtual_output::VirtualOutput,
+        workspace_list::WorkspaceList,
     },
     xwayland::WaylandSelections,
 };
@@ -91,6 +92,8 @@ pub struct Wayluck {
     pub image_capture: ImageCapture,
     /// Every window, for clients that list them.
     pub toplevel_list: ToplevelList,
+    /// Wayland bars' view of the window manager's workspaces.
+    pub workspace_list: WorkspaceList,
     /// Pickers asking what can be shared, and what the window manager offers them
     pub picking: Picking,
     /// Outputs being captured, and when a frame of each was last asked for.
@@ -189,6 +192,7 @@ impl Wayluck {
         // Screenshots and screen sharing and the list of windows a client can pick one from.
         Self::screencopy_global(&dh);
         Self::toplevel_list_global(&dh);
+        Self::workspace_list_global(&dh);
         Self::image_capture_globals(&dh);
         // Clients asking for what's behind their windows blurred.
         Self::background_effect_global(&dh);
@@ -217,6 +221,7 @@ impl Wayluck {
             changes: Vec::new(),
             image_capture: ImageCapture::default(),
             toplevel_list: ToplevelList::default(),
+            workspace_list: Default::default(),
             picking: Picking::default(),
             captures: Vec::new(),
             layer_focus: None,

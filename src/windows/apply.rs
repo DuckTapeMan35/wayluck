@@ -377,7 +377,7 @@ impl Wayluck {
             }
         }
         if workspaces_changed {
-            self.x_workspaces_changed();
+            self.workspaces_changed();
         }
     }
 

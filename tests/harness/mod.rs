@@ -7,6 +7,7 @@ pub mod capture;
 pub mod layer;
 pub mod wayland;
 pub mod wm;
+pub mod workspace_bar;
 pub mod x;
 
 use std::{

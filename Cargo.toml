@@ -69,6 +69,10 @@ required-features = ["test-harness"]
 name = "x_hints"
 required-features = ["test-harness"]
 
+[[test]]
+name = "workspace_list"
+required-features = ["test-harness"]
+
 [features]
 # For wayluck's tests (tests/): a headless backend (--headless), and later
 # a way for tests to drive input. Never in a build that's installed.

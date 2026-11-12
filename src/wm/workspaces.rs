@@ -118,6 +118,13 @@ impl Workspaces {
 }
 
 impl Wayluck {
+    /// What's said of workspaces changed: whoever lists them hears (X
+    /// programs, Wayland bars).
+    pub fn workspaces_changed(&mut self) {
+        self.x_workspaces_changed();
+        self.workspace_list_changed();
+    }
+
     /// Something asked for workspace id to be shown: the window manager
     /// hears so, and decides.
     pub fn wm_workspace_activate_request(&self, id: WorkspaceId) {
@@ -152,7 +159,7 @@ impl Dispatch<WayluckWmWorkspaceV1, WorkspaceId> for Wayluck {
     ) {
         if state.workspaces.exists(*id) {
             state.workspaces.remove(*id);
-            state.x_workspaces_changed();
+            state.workspaces_changed();
         }
     }
 }
