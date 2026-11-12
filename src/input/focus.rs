@@ -153,6 +153,7 @@ impl Wayluck {
             }
         }
         self.windows.focused = window.and(id);
+        self.taskbars_changed();
         // Focus moved on purpose: a bar or launcher that took the keyboard
         // when clicked lets go (one that asks for it exclusively doesn't).
         if self

@@ -5,6 +5,7 @@
 
 pub mod capture;
 pub mod layer;
+pub mod taskbar;
 pub mod wayland;
 pub mod wm;
 pub mod workspace_bar;

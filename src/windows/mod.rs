@@ -9,6 +9,7 @@ mod atomic;
 mod decoration;
 mod list;
 mod popups;
+mod taskbars;
 mod xdg_shell;
 
 use crate::{
@@ -45,6 +46,7 @@ use std::{
     fmt,
     time::Instant,
 };
+pub use taskbars::Taskbars;
 pub use xdg_shell::handle_commit;
 
 /// A window's id: stays the same for its life, never reused.

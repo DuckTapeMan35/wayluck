@@ -17,9 +17,10 @@ use smithay::{
 
 // wl_output: wayluck's outputs, as clients see them.
 impl OutputHandler for Wayluck {
-    /// Bars hear which workspaces are on it.
+    /// Bars hear which workspaces and which windows are on it.
     fn output_bound(&mut self, _output: Output, _wl_output: WlOutput) {
         self.workspace_list_changed();
+        self.taskbars_changed();
     }
 }
 

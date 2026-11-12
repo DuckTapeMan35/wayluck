@@ -304,6 +304,20 @@ impl Wayluck {
         }
     }
 
+    /// Ask window id's client to close it: it may, or not.
+    pub fn close_window(&self, id: WindowId) {
+        let Some(window) = self.windows.get(id) else {
+            return;
+        };
+        if let Some(t) = window.toplevel() {
+            t.send_close();
+        } else if let Some(x11) = window.x11_surface()
+            && let Err(e) = x11.close()
+        {
+            tracing::debug!("X: can't close window {}: {e}", x11.window_id());
+        }
+    }
+
     /// A window's client asked to be fullscreen, or to stop: the window
     /// manager hears so, and decides. false: there's none to ask.
     pub fn wm_fullscreen_request(&self, id: WindowId, on: bool) -> bool {
@@ -348,18 +362,7 @@ impl Dispatch<WayluckWmWindowV1, WindowId> for Wayluck {
     ) {
         match request {
             // Asking the client: it may close, or not.
-            wayluck_wm_window_v1::Request::Close => {
-                let Some(window) = state.windows.get(*id) else {
-                    return;
-                };
-                if let Some(t) = window.toplevel() {
-                    t.send_close();
-                } else if let Some(x11) = window.x11_surface()
-                    && let Err(e) = x11.close()
-                {
-                    tracing::debug!("X: can't close window {}: {e}", x11.window_id());
-                }
-            }
+            wayluck_wm_window_v1::Request::Close => state.close_window(*id),
             // The manager's error, if the curve isn't one.
             wayluck_wm_window_v1::Request::SetAnimation { duration, curve } => {
                 let Some(manager) = state.wm.manager.clone() else {

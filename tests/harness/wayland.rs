@@ -67,6 +67,8 @@ pub struct Seen {
     pub keys: Vec<u32>,
     /// Pointer buttons pressed (true) and released (false) over it.
     pub buttons: Vec<(u32, bool)>,
+    /// How many times it’s been asked to close.
+    pub close_requests: usize,
 }
 
 pub struct Window {
@@ -346,11 +348,12 @@ impl Dispatch<XdgToplevel, ()> for Client {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let xdg_toplevel::Event::Configure { width, height, .. } = event
-            && width > 0
-            && height > 0
-        {
-            client.size = (width, height);
+        match event {
+            xdg_toplevel::Event::Close => client.seen.lock().unwrap().close_requests += 1,
+            xdg_toplevel::Event::Configure { width, height, .. } if width > 0 && height > 0 => {
+                client.size = (width, height);
+            }
+            _ => {}
         }
     }
 }

@@ -43,6 +43,7 @@ impl Wayluck {
             .filter_map(|list| self.new_handle(list, id))
             .collect();
         self.toplevel_list.handles.insert(id, handles);
+        self.taskbars_changed();
     }
 
     /// A handle for window id on list, with all there is to know about it.
@@ -71,11 +72,12 @@ impl Wayluck {
     }
 
     /// A listed window's title or app id changed: every list hears.
-    pub fn list_names_changed(&self, id: WindowId) {
+    pub fn list_names_changed(&mut self, id: WindowId) {
         for handle in self.toplevel_list.handles.get(&id).into_iter().flatten() {
             self.send_names(handle, id);
             handle.done();
         }
+        self.taskbars_changed();
     }
 
     fn send_names(&self, handle: &ExtForeignToplevelHandleV1, id: WindowId) {
@@ -87,11 +89,18 @@ impl Wayluck {
         handle.app_id(app_id.unwrap_or_default());
     }
 
+    /// The windows listed (the window manager's own aren't).
+    pub fn listed(&self) -> impl Iterator<Item = WindowId> + '_ {
+        let ids = self.toplevel_list.handles.keys().copied();
+        ids.filter(|id| !self.windows.is_owned(*id))
+    }
+
     /// A window closed: off every list.
     pub fn unlist_window(&mut self, id: WindowId) {
         for handle in self.toplevel_list.handles.remove(&id).into_iter().flatten() {
             handle.closed();
         }
+        self.taskbars_changed();
     }
 }
 

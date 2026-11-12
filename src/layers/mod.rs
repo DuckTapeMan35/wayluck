@@ -69,6 +69,7 @@ impl Wayluck {
             told.set(usable);
             self.wm_output_changed(output);
             self.x_work_area_changed();
+            self.taskbars_changed();
         }
     }
 

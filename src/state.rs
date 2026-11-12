@@ -6,7 +6,7 @@ use crate::{
     capture::screencopy,
     layers::look::Look,
     render::cursor::Cursor,
-    windows::{Pending, ToplevelList, Windows},
+    windows::{Pending, Taskbars, ToplevelList, Windows},
     wm::{
         WmState,
         scenes::{SceneId, Scenes},
@@ -92,6 +92,8 @@ pub struct Wayluck {
     pub image_capture: ImageCapture,
     /// Every window, for clients that list them.
     pub toplevel_list: ToplevelList,
+    /// Taskbars' view of the windows.
+    pub taskbars: Taskbars,
     /// Wayland bars' view of the window manager's workspaces.
     pub workspace_list: WorkspaceList,
     /// Pickers asking what can be shared, and what the window manager offers them
@@ -193,6 +195,7 @@ impl Wayluck {
         Self::screencopy_global(&dh);
         Self::toplevel_list_global(&dh);
         Self::workspace_list_global(&dh);
+        Self::taskbars_global(&dh);
         Self::image_capture_globals(&dh);
         // Clients asking for what's behind their windows blurred.
         Self::background_effect_global(&dh);
@@ -221,6 +224,7 @@ impl Wayluck {
             changes: Vec::new(),
             image_capture: ImageCapture::default(),
             toplevel_list: ToplevelList::default(),
+            taskbars: Taskbars::default(),
             workspace_list: Default::default(),
             picking: Picking::default(),
             captures: Vec::new(),

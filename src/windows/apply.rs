@@ -379,6 +379,7 @@ impl Wayluck {
         if workspaces_changed {
             self.workspaces_changed();
         }
+        self.taskbars_changed();
     }
 
     /// Where window id is drawn in scene at now (on its way, or where it
