@@ -5,7 +5,7 @@
 use crate::Wayluck;
 use smithay::{
     desktop::Window,
-    reexports::wayland_server::DisplayHandle,
+    reexports::wayland_server::{DisplayHandle, protocol::wl_surface::WlSurface},
     utils::{Logical, Rectangle},
     wayland::{
         background_effect::{
@@ -24,10 +24,17 @@ impl Wayluck {
     }
 }
 
-/// Where window's client asks to blur behind it: rectangles from its top
-/// left (its geometry's), inside it, none overlapping. None: it doesn't ask.
 pub fn blur_region(window: &Window) -> Option<Vec<Rectangle<i32, Logical>>> {
     let surface = window.wl_surface()?;
+    surface_blur_region(&surface, window.geometry())
+}
+
+/// Where surface's client asks to blur behind it, as blur_region, from
+/// rect's top left (in the surface's coordinates), inside rect.
+pub fn surface_blur_region(
+    surface: &WlSurface,
+    rect: Rectangle<i32, Logical>,
+) -> Option<Vec<Rectangle<i32, Logical>>> {
     let region = with_states(&surface, |states| {
         let mut cached = states
             .cached_state
@@ -49,11 +56,10 @@ pub fn blur_region(window: &Window) -> Option<Vec<Rectangle<i32, Logical>>> {
             }
         }
     }
-    let geometry = window.geometry();
-    let inside = Rectangle::from_size(geometry.size);
+    let inside = Rectangle::from_size(rect.size);
     Some(
         (rects.into_iter())
-            .filter_map(|r| Rectangle::new(r.loc - geometry.loc, r.size).intersection(inside))
+            .filter_map(|r| Rectangle::new(r.loc - rect.loc, r.size).intersection(inside))
             .collect(),
     )
 }

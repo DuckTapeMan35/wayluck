@@ -5,6 +5,7 @@ mod harness;
 use harness::{
     Session,
     capture::{Screenshot, screenshot},
+    layer::{Kind, Layer},
     wait_for,
     wayland::Window,
     wm::Wm,
@@ -70,6 +71,23 @@ fn side_by_side(session: &mut Session) -> (Wm, [u32; 3], Vec<Window>) {
         s.at(295, 200) == RED && s.at(305, 200) == BLUE
     });
     s
+}
+
+/// A clear bar (40 high, along the top) over a red window and a blue one
+/// meeting at x 300 below it: the bar, and the windows.
+fn under_a_bar(session: &mut Session) -> (Wm, Layer, Vec<Window>) {
+    let (wm, _, windows) = scene(
+        session,
+        (100, 0, 200, 100),
+        (300, 0, 200, 100),
+        (600, 300, 10, 10),
+    );
+    let bar = Layer::open(session, "glass", Kind::Top, 40, 0);
+    wm.layer("glass");
+    shown(session, "them placed", |s| {
+        s.at(295, 20) == RED && s.at(305, 20) == BLUE
+    });
+    (wm, bar, windows)
 }
 
 #[test]
@@ -177,4 +195,32 @@ fn the_window_manager_can_say_no_to_a_client_asking() {
     shown(&session, "it blurred", |s| s.at(295, 200) != RED);
     wm.blur(glass_id, OFF);
     shown(&session, "it clear", |s| s.at(295, 200) == RED);
+}
+
+#[test]
+fn a_bar_is_blurred_behind_as_the_window_manager_says() {
+    let mut session = Session::start();
+    let (wm, _bar, _windows) = under_a_bar(&mut session);
+    wm.layer_blur("glass", ON);
+    let shot = shown(&session, "it blurred", |s| s.at(295, 20) != RED);
+    let (left, right) = (shot.at(290, 20), shot.at(310, 20));
+    assert!(red(left) > blue(left) && blue(left) > 0, "left: {left:06x}");
+    assert!(
+        blue(right) > red(right) && red(right) > 0,
+        "right: {right:06x}"
+    );
+    // Not below it.
+    assert_eq!(shot.at(295, 60), RED);
+}
+
+#[test]
+fn a_bar_is_blurred_behind_where_it_asks_unless_the_window_manager_says_no() {
+    let mut session = Session::start();
+    let (wm, bar, _windows) = under_a_bar(&mut session);
+    // Only its right half, from x 300 on.
+    bar.ask_blur((300, 0, 400, 40));
+    let shot = shown(&session, "it blurred", |s| s.at(305, 20) != BLUE);
+    assert_eq!(shot.at(295, 20), RED, "left of where it asks");
+    wm.layer_blur("glass", OFF);
+    shown(&session, "not blurred", |s| s.at(305, 20) == BLUE);
 }

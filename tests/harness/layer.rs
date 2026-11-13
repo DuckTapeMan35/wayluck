@@ -13,19 +13,26 @@ use wayland_client::{
     Connection, Dispatch, QueueHandle,
     globals::{GlobalListContents, registry_queue_init},
     protocol::{
-        wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_registry::WlRegistry, wl_shm,
-        wl_shm::WlShm, wl_shm_pool::WlShmPool, wl_surface::WlSurface,
+        wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_region::WlRegion,
+        wl_registry::WlRegistry, wl_shm, wl_shm::WlShm, wl_shm_pool::WlShmPool,
+        wl_surface::WlSurface,
     },
+};
+use wayland_protocols::ext::background_effect::v1::client::{
+    ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1,
+    ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1,
 };
 use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1::{self, ZwlrLayerShellV1},
     zwlr_layer_surface_v1::{self, Anchor, ZwlrLayerSurfaceV1},
 };
-
 pub use zwlr_layer_shell_v1::Layer as Kind;
 
 pub struct Layer {
     conn: Connection,
+    qh: QueueHandle<Client>,
+    compositor: WlCompositor,
+    effects: ExtBackgroundEffectManagerV1,
     layer: ZwlrLayerSurfaceV1,
     surface: WlSurface,
 }
@@ -49,6 +56,7 @@ impl Layer {
         let compositor: WlCompositor = globals.bind(&qh, 4..=6, ()).unwrap();
         let shm: WlShm = globals.bind(&qh, 1..=1, ()).unwrap();
         let shell: ZwlrLayerShellV1 = globals.bind(&qh, 1..=4, ()).unwrap();
+        let effects: ExtBackgroundEffectManagerV1 = globals.bind(&qh, 1..=1, ()).unwrap();
         let surface = compositor.create_surface(&qh, ());
         let layer = shell.get_layer_surface(&surface, None, kind, namespace.into(), &qh, ());
         layer.set_size(0, height);
@@ -70,9 +78,24 @@ impl Layer {
         );
         Layer {
             conn,
+            qh,
+            compositor,
+            effects,
             layer,
             surface,
         }
+    }
+
+    /// Ask for what's behind it blurred where rect is (x, y, width, height,
+    /// from its top left).
+    pub fn ask_blur(&self, (x, y, w, h): (i32, i32, i32, i32)) {
+        let effect = (self.effects).get_background_effect(&self.surface, &self.qh, ());
+        let region = self.compositor.create_region(&self.qh, ());
+        region.add(x, y, w, h);
+        effect.set_blur_region(Some(&region));
+        region.destroy();
+        self.surface.commit();
+        self.conn.flush().unwrap();
     }
 }
 
@@ -144,5 +167,8 @@ ignore!(
     WlShmPool,
     WlBuffer,
     WlSurface,
-    ZwlrLayerShellV1
+    WlRegion,
+    ZwlrLayerShellV1,
+    ExtBackgroundEffectManagerV1,
+    ExtBackgroundEffectSurfaceV1,
 );

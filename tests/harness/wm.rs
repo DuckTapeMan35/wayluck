@@ -302,6 +302,15 @@ impl Wm {
         self.layers.lock().unwrap()[at].clone()
     }
 
+    /// Blur behind the layer surface called namespace: 0 where its client
+    /// asks, 1 nowhere, 2 behind all of it.
+    pub fn layer_blur(&self, namespace: &str, mode: u32) {
+        let tx = self.manager.transaction(&self.qh, ());
+        tx.layer_blur(&self.layer_proxy(namespace), mode.try_into().unwrap());
+        tx.commit();
+        self.conn.flush().unwrap();
+    }
+
     /// Place window id at rect (x, y, width, height) in its scene: instantly
     /// (not animated), or starting from start_from.
     pub fn place(

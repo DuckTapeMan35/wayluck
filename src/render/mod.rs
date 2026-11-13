@@ -11,7 +11,8 @@ pub mod text;
 use crate::{
     Wayluck,
     layers::{Side, look::Look},
-    surfaces::background_effect::blur_region,
+    surfaces::background_effect::{blur_region, surface_blur_region},
+    windows::WindowId,
     wm::scenes::Scene,
 };
 use resized::Resized;
@@ -139,9 +140,14 @@ where
     // A virtual output's are its template's.
     let layers_from = state.layers_from(output);
     let above = state.layers(output, Side::Above);
-    let looks = &mut state.layer_looks;
+    let whole = Rectangle::from_size(area.size.to_physical_precise_round(scale));
+    // What's blurred behind (windows, layer surfaces): where in elements
+    // what's below each starts, and where it is, top first.
+    let mut blurred = Vec::new();
     if let Some(from) = &layers_from {
-        elements.extend(layer_elements(from, renderer, scale, above, looks));
+        let looks = &mut state.layer_looks;
+        let drawing = (&mut elements, &mut blurred);
+        layer_elements(from, renderer, scale, above, looks, drawing);
     }
 
     // X's menus and tooltips, where they put themselves
@@ -167,10 +173,6 @@ where
         .map(|scene| scene.windows().rev().collect())
         .unwrap_or_default();
     let now = Instant::now();
-    let whole = Rectangle::from_size(area.size.to_physical_precise_round(scale));
-    // Windows blurred behind: where in elements what's below each starts,
-    // and where it is, top window first.
-    let mut blurred = Vec::new();
     for (id, at) in shown {
         let Some(window) = state.windows.get(id).cloned() else {
             continue;
@@ -222,8 +224,13 @@ where
             }),
         };
         if let Some(part) = part {
-            let window = content.to_physical_precise_round(scale);
-            blurred.push((elements.len(), id, window, part, radius as f64 * scale.x));
+            blurred.push(Blurred {
+                at: elements.len(),
+                whose: Whose::Window(id),
+                rect: content.to_physical_precise_round(scale),
+                part,
+                radius: radius as f64 * scale.x,
+            });
         }
 
         let mut around = (content, radius);
@@ -253,28 +260,35 @@ where
     }
 
     let below = state.layers(output, Side::Below);
-    let looks = &mut state.layer_looks;
     if let Some(from) = &layers_from {
-        elements.extend(layer_elements(from, renderer, scale, below, looks));
+        let looks = &mut state.layer_looks;
+        let drawing = (&mut elements, &mut blurred);
+        layer_elements(from, renderer, scale, below, looks, drawing);
     }
 
-    // Each blurred window's blur, behind it: the lowest first, so a window
-    // above it blurs it too.
+    // Each blur, behind what's blurred: the lowest first, so what's above it
+    // blurs it too.
     let strength = state.windows.blur;
-    for (at, id, window, part, radius) in blurred.into_iter().rev() {
-        let behind = state.windows.behind_mut(id);
+    for b in blurred.into_iter().rev() {
+        let behind = match &b.whose {
+            Whose::Window(id) => state.windows.behind_mut(*id),
+            Whose::Layer(surface) => match state.layer_looks.get_mut(surface) {
+                Some(look) => &mut look.behind,
+                None => continue,
+            },
+        };
         let blur = behind.element(
             renderer,
-            &elements[at..],
-            window,
-            part,
+            &elements[b.at..],
+            b.rect,
+            b.part,
             whole.size,
-            radius,
+            b.radius,
             strength,
             scale,
         );
         if let Some(blur) = blur {
-            elements.insert(at, Element::Blur(blur));
+            elements.insert(b.at, Element::Blur(blur));
         }
     }
 
@@ -419,36 +433,84 @@ fn outline_elements<R: AsGles>(renderer: &mut R, scene: &mut Scene) -> Vec<Eleme
         .collect()
 }
 
-/// The layer surfaces of `layers` on output (with their popups), front first.
+/// Something blurred behind, from where in an output's elements what's below
+/// it starts.
+struct Blurred {
+    at: usize,
+    whose: Whose,
+    /// Where it is on the output.
+    rect: Rectangle<i32, Physical>,
+    part: blur::Part,
+    /// Its corners' radius.
+    radius: f64,
+}
+
+/// Whose blur it is: kept from frame to frame.
+enum Whose {
+    Window(WindowId),
+    Layer(WlSurface),
+}
+
+/// The layer surfaces of `layers` on output (with their popups), front
+/// first, onto elements; those blurred behind, onto blurred.
 fn layer_elements<R>(
     output: &Output,
     renderer: &mut R,
     scale: Scale<f64>,
     layers: &[Layer],
     looks: &mut HashMap<WlSurface, Look>,
-) -> Vec<Element<R>>
-where
+    (elements, blurred): (&mut Vec<Element<R>>, &mut Vec<Blurred>),
+) where
     R: Renderer + ImportAll + ImportMem + AsGles,
     R::TextureId: Clone + Texture + Send + 'static,
 {
     let map = layer_map_for_output(output);
-    let mut elements = Vec::new();
     for &layer in layers {
         // A layer's surfaces come back to front: the last is on top.
         for surface in map.layers_on(layer).rev() {
             let Some(rect) = map.layer_geometry(surface) else {
                 continue;
             };
+            let surface = surface.wl_surface();
+            // Blurred behind where the window manager says, or where its
+            // client asks (if the window manager leaves that to it).
+            let mode = looks.get(surface).map_or(blur::Mode::Client, |l| l.blur);
+            let part = match mode {
+                blur::Mode::On => Some(blur::Part::Whole),
+                blur::Mode::Off => None,
+                blur::Mode::Client => {
+                    (surface_blur_region(surface, Rectangle::from_size(rect.size)))
+                        .filter(|r| !r.is_empty())
+                        .map(|rects| {
+                            let rects = rects
+                                .into_iter()
+                                .map(|r| r.to_physical_precise_round(scale));
+                            blur::Part::Only(rects.collect())
+                        })
+                }
+            };
+            // Its blur's kept with its look, from frame to frame.
+            let mut look = match part {
+                Some(_) => Some(looks.entry(surface.clone()).or_default()),
+                None => looks.get_mut(surface),
+            };
             // As the window manager has it look: its corners cut off, its
             // shadow behind it.
-            let mut look = looks.get_mut(surface.wl_surface());
             let radius = look.as_ref().map_or(0, |l| l.radius);
             let ids = look.as_deref_mut().map(|l| &mut l.clip_ids);
             let corner = Point::default();
-            let surface = surface.wl_surface();
             elements.extend(surface_elements(
                 renderer, surface, corner, rect, scale, radius, ids,
             ));
+            if let Some(part) = part {
+                blurred.push(Blurred {
+                    at: elements.len(),
+                    whose: Whose::Layer(surface.clone()),
+                    rect: rect.to_physical_precise_round(scale),
+                    part,
+                    radius: radius as f64 * scale.x,
+                });
+            }
             if let Some(shadow) = look.and_then(|l| l.shadow.as_mut()) {
                 let at = Point::default();
                 let shadow = shadow.element(renderer, rect, radius, at);
@@ -456,7 +518,6 @@ where
             }
         }
     }
-    elements
 }
 
 /// After a frame is on screen: tell the clients on output, so they draw
