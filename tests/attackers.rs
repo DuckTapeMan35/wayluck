@@ -21,7 +21,9 @@ fn key_spy_sees_keys_on_a_plain_x_server() {
         .expect("needs xdotool");
     sleep(Duration::from_millis(300));
     let seen = spy.stop();
-    let _ = xvfb.kill();
+    // Asked to stop (not killed), so it takes its socket and lock file.
+    let pid = rustix::process::Pid::from_child(&xvfb);
+    let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
     let _ = xvfb.wait();
     // Every way it watches works: raw events, its window's, the keymap.
     for how in ["raw key press", "key press", "keymap"] {

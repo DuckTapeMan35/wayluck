@@ -15,7 +15,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     sync::atomic::{AtomicU32, Ordering},
     thread::sleep,
     time::{Duration, Instant},
@@ -23,6 +23,9 @@ use std::{
 
 /// How long anything may take before a test gives up on it.
 pub const PATIENCE: Duration = Duration::from_secs(10);
+
+/// How long a test's wayluck has to stop when asked, before it's killed.
+const GRACE: Duration = Duration::from_secs(2);
 
 /// A wayluck for one test: headless, in a runtime directory of its own
 /// (removed after), with no window manager, so a click focuses a window.
@@ -110,11 +113,19 @@ impl Session {
         session
     }
 
-    /// Ask wayluck to stop, as logging out does (SIGTERM), and wait for it to: how it exited.
-    pub fn terminate(&mut self) -> std::process::ExitStatus {
-        let pid = rustix::process::Pid::from_child(&self.child);
-        rustix::process::kill_process(pid, rustix::process::Signal::TERM).unwrap();
+    /// Ask wayluck to stop, as logging out does (SIGTERM), and wait for it
+    /// to: how it exited.
+    pub fn terminate(&mut self) -> ExitStatus {
+        self.ask_to_stop();
         wait_for(|| self.child.try_wait().unwrap(), "wayluck to stop")
+    }
+
+    /// SIGTERM, unless it's stopped already (and maybe its pid's another's).
+    fn ask_to_stop(&mut self) {
+        if let Ok(None) = self.child.try_wait() {
+            let pid = rustix::process::Pid::from_child(&self.child);
+            let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
+        }
     }
 
     /// The runtime directory (its Wayland socket is in it).
@@ -272,9 +283,20 @@ impl Session {
 }
 
 impl Drop for Session {
+    /// Stopped as it would be at logout, so it takes its sockets and X's lock
+    /// files with it; killed if it doesn't in time (never panicking: the test
+    /// may be failing already).
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.ask_to_stop();
+        let start = Instant::now();
+        while let Ok(None) = self.child.try_wait() {
+            if start.elapsed() > GRACE {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                break;
+            }
+            sleep(Duration::from_millis(10));
+        }
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
