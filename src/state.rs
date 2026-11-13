@@ -23,8 +23,8 @@ use smithay::{
     output::Output,
     reexports::{
         calloop::{
-            EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction, generic::Generic,
-            ping::Ping,
+            EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction, RegistrationToken,
+            generic::Generic, ping::Ping,
         },
         wayland_server::{
             Display, DisplayHandle,
@@ -63,6 +63,10 @@ pub type ImportDmabuf = Box<dyn Fn(&Dmabuf) -> bool>;
 pub struct Wayluck {
     /// What WAYLAND_DISPLAY should be for clients, e.g.: wayland-1
     pub socket_name: OsString,
+    /// Its socket, in the loop: removed by stop.
+    socket: RegistrationToken,
+    /// Xwayland, in the loop once it's started: removed by stop.
+    pub xwayland: Option<RegistrationToken>,
     pub display_handle: DisplayHandle,
     pub loop_signal: LoopSignal,
     /// Asks the backend for a frame (queue_redraw); None until it's set up.
@@ -165,13 +169,24 @@ pub struct Wayluck {
 delegate_dispatch2!(Wayluck);
 
 impl Wayluck {
+    /// Stopping: what wayluck made goes with it. The loop is never dropped
+    /// (what's in it holds handles to it), so what's in it that owns files is
+    /// removed by hand: its socket, and Xwayland (with X's socket and lock
+    /// file). The door's go with state.
+    pub fn stop(&mut self) {
+        let sources = [Some(self.socket), self.xwayland.take()];
+        for token in sources.into_iter().flatten() {
+            self.loop_handle.remove(token);
+        }
+    }
+
     pub fn new(event_loop: &mut EventLoop<'static, Self>, display: Display<Self>) -> Self {
         let dh = display.handle();
         let compositor_state = CompositorState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         // xdg-output too: clients asking for outputs' logical size and name.
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
-        let socket_name = listen(display, event_loop);
+        let (socket_name, socket) = listen(display, event_loop);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         // Middle-click paste, and clipboard tools.
@@ -209,6 +224,8 @@ impl Wayluck {
         seat.add_pointer();
         Self {
             socket_name,
+            socket,
+            xwayland: None,
             display_handle: dh,
             loop_signal: event_loop.get_signal(),
             redraw: None,
@@ -276,13 +293,16 @@ impl Wayluck {
 }
 
 /// Open a client socket (the first free wayland-N) and serve the display
-/// from the event loop; the socket's name.
-fn listen(mut display: Display<Wayluck>, event_loop: &mut EventLoop<Wayluck>) -> OsString {
+/// from the event loop; the socket's name, and its source's token.
+fn listen(
+    mut display: Display<Wayluck>,
+    event_loop: &mut EventLoop<Wayluck>,
+) -> (OsString, RegistrationToken) {
     let socket = ListeningSocketSource::new_auto().expect("a wayland socket");
     let name = socket.socket_name().to_os_string();
     let handle = event_loop.handle();
     // A client connecting: wayluck keeps per-client state in ClientState.
-    handle
+    let socket = handle
         .insert_source(socket, |stream, _, state| {
             if let Err(e) = state
                 .display_handle
@@ -310,7 +330,7 @@ fn listen(mut display: Display<Wayluck>, event_loop: &mut EventLoop<Wayluck>) ->
             },
         )
         .expect("the display in the event loop");
-    name
+    (name, socket)
 }
 
 /// What wayluck keeps per client.

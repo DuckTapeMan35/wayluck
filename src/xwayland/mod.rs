@@ -113,9 +113,12 @@ impl Wayluck {
                 state.x_door_turn_away();
             }
         });
-        if let Err(e) = source {
-            tracing::warn!("no X clients: {e}");
-            self.x_door_turn_away();
+        match source {
+            Ok(token) => self.xwayland = Some(token),
+            Err(e) => {
+                tracing::warn!("no X clients: {e}");
+                self.x_door_turn_away();
+            }
         }
     }
 

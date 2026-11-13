@@ -70,6 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         session::import_environment(&state);
     }
     session::start(&state, args.command.as_deref());
+    session::stop_on_signals(&event_loop)?;
 
     // Stop on its own, after a while (for testing).
     if let Some(after) = args.exit_after {
@@ -91,6 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             tracing::warn!("couldn't flush clients: {e}");
         }
     })?;
+    state.stop();
     Ok(())
 }
 

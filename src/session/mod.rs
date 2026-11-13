@@ -3,10 +3,11 @@
 
 mod programs;
 
-pub use programs::raise_open_files_limit;
-
 use crate::Wayluck;
-use std::{ffi::OsStr, path::PathBuf};
+pub use programs::raise_open_files_limit;
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+use smithay::reexports::calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic};
+use std::{ffi::OsStr, os::unix::net::UnixStream, path::PathBuf};
 
 /// Run the command inside wayluck (the window manager, usually): -c's, or
 /// else the init script, if there is one.
@@ -67,4 +68,24 @@ fn init_script() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
     let init = config.join("wayluck").join("init");
     init.is_file().then_some(init)
+}
+
+/// SIGTERM (logging out), SIGINT (^C), SIGHUP (its terminal gone): the
+/// loop stops, so main returns and what wayluck made goes with it (its
+/// socket, X's sockets and lock files) instead of being left behind. A
+/// handler writes to a socket the loop watches; the signals aren't blocked,
+/// so the programs wayluck starts get them as usual.
+pub fn stop_on_signals(event_loop: &EventLoop<'static, Wayluck>) -> std::io::Result<()> {
+    let (heard, told) = UnixStream::pair()?;
+    for signal in [SIGTERM, SIGINT, SIGHUP] {
+        signal_hook::low_level::pipe::register(signal, told.try_clone()?)?;
+    }
+    let source = Generic::new(heard, Interest::READ, Mode::Level);
+    let inserted = event_loop.handle().insert_source(source, |_, _, state| {
+        tracing::info!("stopping: asked to by a signal");
+        state.loop_signal.stop();
+        Ok(PostAction::Remove)
+    });
+    inserted.map_err(|e| e.error)?;
+    Ok(())
 }

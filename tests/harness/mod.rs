@@ -110,6 +110,13 @@ impl Session {
         session
     }
 
+    /// Ask wayluck to stop, as logging out does (SIGTERM), and wait for it to: how it exited.
+    pub fn terminate(&mut self) -> std::process::ExitStatus {
+        let pid = rustix::process::Pid::from_child(&self.child);
+        rustix::process::kill_process(pid, rustix::process::Signal::TERM).unwrap();
+        wait_for(|| self.child.try_wait().unwrap(), "wayluck to stop")
+    }
+
     /// The runtime directory (its Wayland socket is in it).
     pub fn dir(&self) -> &Path {
         &self.dir
