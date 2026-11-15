@@ -641,7 +641,9 @@
     <description summary="changes applied together">
       Requests made before commit are collected, not applied. After commit,
       the transaction takes no more requests; wayluck answers with applied
-      or failed, and then it should be destroyed.
+      or failed, and then it should be destroyed. Commit the next one only
+      once this one is answered: one committed before fails, and none of it
+      is applied.
     </description>
 
     <enum name="error">

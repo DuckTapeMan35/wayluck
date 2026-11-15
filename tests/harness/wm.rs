@@ -50,6 +50,9 @@ use protocol::{
 /// instantly.
 pub type Placing = (u32, (i32, i32, i32, i32), bool);
 
+/// Changes to make in a transaction.
+type Build = Box<dyn FnOnce(&WayluckWmTransactionV1) + Send>;
+
 /// A window manager's workspaces, by name.
 type Workspaces = Arc<Mutex<Vec<(String, WayluckWmWorkspaceV1)>>>;
 
@@ -103,6 +106,8 @@ pub struct HeardLayer {
 struct Log {
     ready: bool,
     windows: Vec<Heard>,
+    /// New windows are left for the test to place.
+    unplaced: bool,
     /// Transactions wayluck refused.
     failed: usize,
     /// Workspaces the user chose to share.
@@ -113,6 +118,10 @@ struct Log {
     layers: Vec<HeardLayer>,
     /// The workspaces asked to be shown, by name, in order
     workspaces_asked: Vec<String>,
+    /// Transactions committed and not answered yet: the next waits for none.
+    unanswered: u32,
+    /// Changes from wayluck's events that wait for it (made in one, then).
+    later: Vec<Build>,
 }
 
 pub struct Wm {
@@ -142,6 +151,7 @@ impl Wm {
         let layers = Arc::new(Mutex::default());
         let workspaces = Workspaces::default();
         let mut client = Client {
+            manager: manager.clone(),
             output: None,
             log: log.clone(),
             windows: windows.clone(),
@@ -190,6 +200,21 @@ impl Wm {
             },
             what,
         )
+    }
+
+    /// A transaction built by build, committed once the last one is
+    /// answered: wayluck refuses one sooner.
+    fn send(&self, build: impl FnOnce(&WayluckWmTransactionV1)) {
+        let mut log = wait_for(
+            || {
+                let log = self.log.lock().unwrap();
+                (log.unanswered == 0).then_some(log)
+            },
+            "the last transaction to be answered",
+        );
+        commit(&mut log, &self.manager, &self.qh, build);
+        drop(log);
+        self.conn.flush().unwrap();
     }
 
     /// The titles of the windows it's heard of, so far.
@@ -247,6 +272,11 @@ impl Wm {
         self.conn.flush().unwrap();
     }
 
+    /// From now on, new windows are left for the test to place.
+    pub fn stop_placing(&self) {
+        self.log.lock().unwrap().unplaced = true;
+    }
+
     /// How windows move: over duration milliseconds, along curve (how far
     /// along at evenly spaced times).
     pub fn set_curve(&self, duration: u32, curve: &[f32]) {
@@ -279,10 +309,10 @@ impl Wm {
     /// Cut the layer surface called namespace's corners off, rounded radius
     /// pixels.
     pub fn layer_corners(&self, namespace: &str, radius: u32) {
-        let tx = self.manager.transaction(&self.qh, ());
-        tx.layer_corners(&self.layer_proxy(namespace), radius);
-        tx.commit();
-        self.conn.flush().unwrap();
+        let layer = self.layer_proxy(namespace);
+        self.send(|tx| {
+            tx.layer_corners(&layer, radius);
+        });
     }
 
     /// Give the layer surface called namespace a shadow, as shadow does a
@@ -295,10 +325,10 @@ impl Wm {
         (x, y): (i32, i32),
         color: u32,
     ) {
-        let tx = self.manager.transaction(&self.qh, ());
-        tx.layer_shadow(&self.layer_proxy(namespace), blur, spread, x, y, color);
-        tx.commit();
-        self.conn.flush().unwrap();
+        let layer = self.layer_proxy(namespace);
+        self.send(|tx| {
+            tx.layer_shadow(&layer, blur, spread, x, y, color);
+        });
     }
 
     fn layer_proxy(&self, namespace: &str) -> WayluckWmLayerV1 {
@@ -312,10 +342,10 @@ impl Wm {
     /// Blur behind the layer surface called namespace: 0 where its client
     /// asks, 1 nowhere, 2 behind all of it.
     pub fn layer_blur(&self, namespace: &str, mode: u32) {
-        let tx = self.manager.transaction(&self.qh, ());
-        tx.layer_blur(&self.layer_proxy(namespace), mode.try_into().unwrap());
-        tx.commit();
-        self.conn.flush().unwrap();
+        let layer = self.layer_proxy(namespace);
+        self.send(|tx| {
+            tx.layer_blur(&layer, mode.try_into().unwrap());
+        });
     }
 
     /// Place window id at rect (x, y, width, height) in its scene: instantly
@@ -329,75 +359,83 @@ impl Wm {
     ) {
         let (x, y, w, h) = rect;
         let window = self.proxy(id);
-        let tx = self.manager.transaction(&self.qh, ());
-        tx.place(&self.scene, &window, x, y, w, h);
-        if instant {
-            tx.instant(Some(&window));
-        }
-        if let Some((x, y, w, h)) = start_from {
-            tx.start_from(&window, x, y, w, h);
-        }
-        tx.commit();
-        self.conn.flush().unwrap();
+        self.send(|tx| {
+            tx.place(&self.scene, &window, x, y, w, h);
+            if instant {
+                tx.instant(Some(&window));
+            }
+            if let Some((x, y, w, h)) = start_from {
+                tx.start_from(&window, x, y, w, h);
+            }
+        });
     }
 
     /// Place windows together, each (id, rect, instantly), in one
     /// transaction; all instantly if all_instant.
     pub fn place_together(&self, windows: &[Placing], all_instant: bool) {
-        let tx = self.manager.transaction(&self.qh, ());
-        for &(id, (x, y, w, h), instant) in windows {
-            let window = self.proxy(id);
-            tx.place(&self.scene, &window, x, y, w, h);
-            if instant {
-                tx.instant(Some(&window));
+        self.send(|tx| {
+            for &(id, (x, y, w, h), instant) in windows {
+                let window = self.proxy(id);
+                tx.place(&self.scene, &window, x, y, w, h);
+                if instant {
+                    tx.instant(Some(&window));
+                }
             }
-        }
-        if all_instant {
-            tx.instant(None);
-        }
-        tx.commit();
-        self.conn.flush().unwrap();
+            if all_instant {
+                tx.instant(None);
+            }
+        });
     }
 
     /// Say where window id starts from, with no place for it.
     pub fn start_from_unplaced(&self, id: u32) {
-        let tx = self.manager.transaction(&self.qh, ());
-        tx.start_from(&self.proxy(id), 0, 0, 10, 10);
-        tx.commit();
-        self.conn.flush().unwrap();
+        self.send(|tx| {
+            tx.start_from(&self.proxy(id), 0, 0, 10, 10);
+        });
     }
 
     /// Make window id fullscreen (on), or not.
     pub fn fullscreen(&self, id: u32, on: bool) {
-        let tx = self.manager.transaction(&self.qh, ());
-        tx.fullscreen(&self.proxy(id), on.into());
-        tx.commit();
-        self.conn.flush().unwrap();
+        self.send(|tx| {
+            tx.fullscreen(&self.proxy(id), on.into());
+        });
     }
 
     /// Give window id a shadow: blurred blur pixels, spread, moved by x, y,
     /// in color (0xAARRGGBB).
     pub fn shadow(&self, id: u32, blur: u32, spread: i32, (x, y): (i32, i32), color: u32) {
-        let tx = self.manager.transaction(&self.qh, ());
-        tx.shadow(&self.proxy(id), blur, spread, x, y, color);
-        tx.commit();
-        self.conn.flush().unwrap();
+        self.send(|tx| {
+            tx.shadow(&self.proxy(id), blur, spread, x, y, color);
+        });
     }
 
     /// Give window id the keyboard.
     pub fn focus(&self, id: u32) {
-        let tx = self.manager.transaction(&self.qh, ());
-        tx.focus(Some(&self.proxy(id)));
-        tx.commit();
+        self.send(|tx| {
+            tx.focus(Some(&self.proxy(id)));
+        });
+    }
+
+    /// Give window id the keyboard without waiting for the last transaction
+    /// to be answered, as a window manager shouldn't.
+    pub fn focus_without_waiting(&self, id: u32) {
+        let window = self.proxy(id);
+        commit(
+            &mut self.log.lock().unwrap(),
+            &self.manager,
+            &self.qh,
+            |tx| {
+                tx.focus(Some(&window));
+            },
+        );
         self.conn.flush().unwrap();
     }
 
     /// Blur behind window id: 0 where its client asks, 1 nowhere, 2 behind all of it.
     pub fn blur(&self, id: u32, mode: u32) {
-        let tx = self.manager.transaction(&self.qh, ());
-        tx.blur(&self.proxy(id), mode.try_into().unwrap());
-        tx.commit();
-        self.conn.flush().unwrap();
+        self.send(|tx| {
+            tx.blur(&self.proxy(id), mode.try_into().unwrap());
+        });
     }
 
     /// How strongly windows are blurred behind.
@@ -408,10 +446,9 @@ impl Wm {
 
     /// Give window id a border width pixels wide, all in color.
     pub fn border(&self, id: u32, width: u32, color: u32) {
-        let tx = self.manager.transaction(&self.qh, ());
-        tx.border(&self.proxy(id), width, color, color, color, color, 0);
-        tx.commit();
-        self.conn.flush().unwrap();
+        self.send(|tx| {
+            tx.border(&self.proxy(id), width, color, color, color, color, 0);
+        });
     }
 
     /// Stop being the window manager.
@@ -429,10 +466,9 @@ impl Wm {
     /// Make a workspace called name, listed after those made before.
     pub fn add_workspace(&self, name: &str) {
         let workspace = self.manager.workspace(&self.qh, ());
-        let tx = self.manager.transaction(&self.qh, ());
-        tx.workspace_name(&workspace, name.into());
-        tx.commit();
-        self.conn.flush().unwrap();
+        self.send(|tx| {
+            tx.workspace_name(&workspace, name.into());
+        });
         self.workspaces
             .lock()
             .unwrap()
@@ -441,17 +477,16 @@ impl Wm {
 
     /// Make the workspace called name the active one, and the others not.
     pub fn activate_workspace(&self, name: &str) {
-        let tx = self.manager.transaction(&self.qh, ());
         for (n, workspace) in self.workspaces.lock().unwrap().iter() {
-            let state = if n == name {
-                wayluck_wm_workspace_v1::State::Active
-            } else {
-                wayluck_wm_workspace_v1::State::empty()
-            };
-            tx.workspace_state(workspace, state);
+            self.send(|tx| {
+                let state = if n == name {
+                    wayluck_wm_workspace_v1::State::Active
+                } else {
+                    wayluck_wm_workspace_v1::State::empty()
+                };
+                tx.workspace_state(workspace, state);
+            });
         }
-        tx.commit();
-        self.conn.flush().unwrap();
     }
 
     /// Destroy the workspace called name.
@@ -469,10 +504,9 @@ impl Wm {
             let found = workspaces.iter().find(|(n, _)| n == name);
             found.unwrap().1.clone()
         });
-        let tx = self.manager.transaction(&self.qh, ());
-        tx.window_workspace(&self.proxy(id), workspace.as_ref());
-        tx.commit();
-        self.conn.flush().unwrap();
+        self.send(|tx| {
+            tx.window_workspace(&self.proxy(id), workspace.as_ref());
+        });
     }
 
     fn proxy(&self, id: u32) -> WayluckWmWindowV1 {
@@ -492,6 +526,7 @@ fn floats(curve: &[f32]) -> Vec<u8> {
 }
 
 struct Client {
+    manager: WayluckWmManagerV1,
     scene: WayluckWmSceneV1,
     /// The output it shows its scene on.
     output: Option<WayluckWmOutputV1>,
@@ -500,6 +535,20 @@ struct Client {
     /// Its objects for layer surfaces, in the order heard of (as in its log).
     layers: Arc<Mutex<Vec<WayluckWmLayerV1>>>,
     workspaces: Workspaces,
+}
+
+/// Commit a transaction built by build: the one unanswered now (log is
+/// the window manager's, locked).
+fn commit(
+    log: &mut Log,
+    manager: &WayluckWmManagerV1,
+    qh: &QueueHandle<Client>,
+    build: impl FnOnce(&WayluckWmTransactionV1),
+) {
+    let tx = manager.transaction(qh, ());
+    build(&tx);
+    tx.commit();
+    log.unanswered += 1;
 }
 
 impl Client {
@@ -511,6 +560,21 @@ impl Client {
         let mut log = self.log.lock().unwrap();
         if let Some(heard) = log.windows.iter_mut().find(|w| w.id == id) {
             f(heard);
+        }
+    }
+
+    /// A transaction built by build: now, or once the last one is answered,
+    /// with the others waiting for it.
+    fn send(
+        &self,
+        qh: &QueueHandle<Client>,
+        build: impl FnOnce(&WayluckWmTransactionV1) + Send + 'static,
+    ) {
+        let mut log = self.log.lock().unwrap();
+        if log.unanswered > 0 {
+            log.later.push(Box::new(build));
+        } else {
+            commit(&mut log, &self.manager, qh, build);
         }
     }
 
@@ -539,9 +603,8 @@ impl Dispatch<WayluckWmManagerV1, ()> for Client {
         match event {
             // Its scene, on every output (there's one, headless).
             wayluck_wm_manager_v1::Event::Output { id } => {
-                let tx = manager.transaction(qh, ());
-                tx.show(&id, Some(&client.scene));
-                tx.commit();
+                let (output, scene) = (id.clone(), client.scene.clone());
+                client.send(qh, move |tx| tx.show(&output, Some(&scene)));
                 client.output.get_or_insert(id);
             }
             // Its one workspace.
@@ -554,13 +617,16 @@ impl Dispatch<WayluckWmManagerV1, ()> for Client {
             wayluck_wm_manager_v1::Event::ShareWorkspace { .. } => {
                 client.log.lock().unwrap().shared += 1;
             }
-            // Placed and focused at once.
+            // Placed and focused at once, unless the test places it.
             wayluck_wm_manager_v1::Event::Window { window, id } => {
-                let (x, y, w, h) = PLACE;
-                let tx = manager.transaction(qh, ());
-                tx.place(&client.scene, &window, x, y, w, h);
-                tx.focus(Some(&window));
-                tx.commit();
+                if !client.log.lock().unwrap().unplaced {
+                    let (x, y, w, h) = PLACE;
+                    let (scene, placed) = (client.scene.clone(), window.clone());
+                    client.send(qh, move |tx| {
+                        tx.place(&scene, &placed, x, y, w, h);
+                        tx.focus(Some(&placed));
+                    });
+                }
                 client.windows.lock().unwrap().push((window, id));
                 client.log.lock().unwrap().windows.push(Heard {
                     id,
@@ -646,12 +712,23 @@ impl Dispatch<WayluckWmTransactionV1, ()> for Client {
         event: wayluck_wm_transaction_v1::Event,
         _: &(),
         _: &Connection,
-        _: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
     ) {
+        let mut log = client.log.lock().unwrap();
         if let wayluck_wm_transaction_v1::Event::Failed { .. } = event {
-            client.log.lock().unwrap().failed += 1;
+            log.failed += 1;
         }
         tx.destroy();
+        // Answered: what waited for it, in one.
+        log.unanswered -= 1;
+        if log.unanswered == 0 && !log.later.is_empty() {
+            let later = std::mem::take(&mut log.later);
+            commit(&mut log, &client.manager, qh, |tx| {
+                for build in later {
+                    build(tx);
+                }
+            });
+        }
     }
 }
 

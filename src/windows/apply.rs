@@ -139,8 +139,16 @@ impl Wayluck {
                 return Err("a window starting from somewhere isn't placed");
             }
         }
-        // One at a time: one still waiting for its clients is shown first.
-        self.show_pending();
+        // One at a time: cutting the last one short would show windows that
+        // haven't redrawn for it.
+        if self.pending.is_some() {
+            return Err("committed before the last one was answered");
+        }
+
+        // Placed instantly: shown where it goes at once.
+        let instant = |id: WindowId| {
+            (changes.iter()).any(|c| matches!(*c, Change::Instant(w) if w.is_none_or(|w| w == id)))
+        };
 
         // What clients are told.
         let mut resized = Vec::new();
@@ -149,9 +157,12 @@ impl Wayluck {
                 Change::Place(_, id, rect) => {
                     let window = self.windows.get(id).unwrap();
                     if let Some(toplevel) = window.toplevel() {
+                        // What's shown waits for its redraw, unless it's placed
+                        // instantly: its client catches up. A new one's first
+                        // is always waited for: there's never room shown empty for it.
+                        let new = !toplevel.is_initial_configure_sent();
                         let before = toplevel.with_pending_state(|s| s.size.replace(rect.size));
-                        // A window not configured yet has nothing on screen to keep.
-                        if before != Some(rect.size) && toplevel.is_initial_configure_sent() {
+                        if new || (before != Some(rect.size) && !instant(id)) {
                             resized.push(id);
                         }
                     } else if let Some(x11) = window.x11_surface() {

@@ -11,6 +11,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 use wayland_client::{
     Connection, Dispatch, QueueHandle,
@@ -118,6 +119,21 @@ impl Window {
 
     /// A window of session's, filled with argb (0xAARRGGBB), mapped.
     pub fn titled(session: &Session, argb: u32, title: &str) -> Window {
+        let window = Self::connect(session, argb, title, Duration::ZERO);
+        wait_for(
+            || window.seen().mapped.then_some(()),
+            "the window to be mapped",
+        );
+        window
+    }
+
+    /// A window of session's, filled with argb (0xAARRGGBB), that takes
+    /// slow to draw the first time it's configured; not mapped yet.
+    pub fn slow(session: &Session, argb: u32, title: &str, slow: Duration) -> Window {
+        Self::connect(session, argb, title, slow)
+    }
+
+    fn connect(session: &Session, argb: u32, title: &str, slow: Duration) -> Window {
         let stream = UnixStream::connect(session.dir().join(&session.wayland_display)).unwrap();
         let conn = Connection::from_socket(stream).unwrap();
         let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
@@ -144,13 +160,14 @@ impl Window {
             shm,
             surface: surface.clone(),
             argb,
+            slow,
             size: (200, 200),
         };
         std::thread::spawn(move || {
             // Until wayluck goes, at the end of the test.
             while queue.blocking_dispatch(&mut client).is_ok() {}
         });
-        let window = Window {
+        Window {
             seen,
             conn,
             qh,
@@ -163,12 +180,7 @@ impl Window {
             effect: OnceCell::new(),
             activation,
             seat,
-        };
-        wait_for(
-            || window.seen().mapped.then_some(()),
-            "the window to be mapped",
-        );
-        window
+        }
     }
 
     /// Ask to be brought forward (xdg-activation): with a token from its
@@ -269,6 +281,8 @@ struct Client {
     surface: WlSurface,
     argb: u32,
     size: (i32, i32),
+    /// How long it takes to draw the first time (then none).
+    slow: Duration,
 }
 
 impl Client {
@@ -316,6 +330,7 @@ impl Dispatch<XdgSurface, ()> for Client {
     ) {
         if let xdg_surface::Event::Configure { serial } = event {
             xdg.ack_configure(serial);
+            std::thread::sleep(client.slow);
             client.draw(qh);
             // Mapped once wayluck has handled the commit (and put the
             // window where a click finds it): it answers this after.

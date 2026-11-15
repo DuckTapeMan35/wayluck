@@ -7,7 +7,7 @@
 use crate::{
     Wayluck,
     surfaces::compositor_state_of,
-    windows::{Change, WindowId, Windows},
+    windows::{Change, WindowId, Windows, names},
     wm::protocol::wayluck_wm_transaction_v1::WayluckWmTransactionV1,
 };
 use smithay::{
@@ -35,6 +35,10 @@ use std::{
 
 /// How long a transaction waits for slow clients before it's shown anyway.
 const PATIENCE: Duration = Duration::from_millis(200);
+
+/// How long one waits for a new window's first frame: the room made for it
+/// isn't shown before, unless its client never draws.
+const FIRST_FRAME: Duration = Duration::from_secs(2);
 
 /// A transaction waiting for clients to redraw.
 pub struct Pending {
@@ -77,10 +81,25 @@ impl Wayluck {
         let timeout = self
             .loop_handle
             .insert_source(Timer::from_duration(PATIENCE), |_, _, state| {
-                if let Some(p) = &mut state.pending {
-                    p.timeout = None; // this is it; nothing to remove
-                    tracing::debug!("transaction: {} client(s) too slow", p.waiting.len());
+                let Some(p) = &mut state.pending else {
+                    return TimeoutAction::Drop;
+                };
+                // Waiting for a new window's first frame: on, looking again
+                // as often (one that's only redrawing may be what's left).
+                let first_frame = (p.waiting.keys())
+                    .filter_map(|id| state.windows.get(*id))
+                    .any(|w| w.geometry().size.is_empty());
+                let left = FIRST_FRAME.saturating_sub(p.since.elapsed());
+                if first_frame && !left.is_zero() {
+                    return TimeoutAction::ToDuration(left.min(PATIENCE));
                 }
+                p.timeout = None; // this is it; nothing to remove
+                // Which, by name, and whether they've drawn at all yet.
+                let slow: Vec<_> = (p.waiting.keys())
+                    .filter_map(|id| state.windows.get(*id))
+                    .map(|w| (names(w), w.geometry().size.is_empty()))
+                    .collect();
+                tracing::debug!("transaction: too slow (names, never drawn): {slow:?}");
                 state.show_pending();
                 TimeoutAction::Drop
             })

@@ -22,6 +22,7 @@ use smithay::{
             backend::ClientId, protocol::wl_output::WlOutput,
         },
     },
+    utils::Rectangle,
 };
 
 /// Every taskbar's view of the windows.
@@ -180,9 +181,15 @@ impl Wayluck {
         let Some(window) = self.windows.get(id) else {
             return false;
         };
-        let Some(rect) = self.space.element_geometry(window) else {
+        // At the size it's placed at, not the one drawn: a client still
+        // catching up (placed instantly) is already what it's made.
+        let (Some(at), Some((_, placed))) = (
+            self.space.element_geometry(window),
+            self.windows.placed.get(&id),
+        ) else {
             return false;
         };
+        let rect = Rectangle::new(at.loc, placed.size);
         let outputs = self.outputs_of(id);
         let usable = outputs.first().and_then(|o| self.usable(o));
         usable.is_some_and(|usable| rect.contains_rect(usable))
