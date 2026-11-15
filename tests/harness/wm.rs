@@ -249,16 +249,23 @@ impl Wm {
 
     /// How windows move: over duration milliseconds, along curve (how far
     /// along at evenly spaced times).
-    pub fn set_animation(&self, duration: u32, curve: &[f32]) {
-        self.manager.set_animation(duration, floats(curve));
+    pub fn set_curve(&self, duration: u32, curve: &[f32]) {
+        self.manager.set_curve(duration, floats(curve));
+        self.conn.flush().unwrap();
+    }
+
+    /// Windows pulled to where they're placed by a spring: how hard (per
+    /// second squared) and how damped (1: no overshooting).
+    pub fn set_spring(&self, stiffness: f64, damping: f64) {
+        self.manager.set_spring(stiffness, damping);
         self.conn.flush().unwrap();
     }
 
     /// How window id moves, whatever all windows do (None: as they do).
-    pub fn set_window_animation(&self, id: u32, animation: Option<(u32, &[f32])>) {
+    pub fn set_window_curve(&self, id: u32, curve: Option<(u32, &[f32])>) {
         let window = self.proxy(id);
-        match animation {
-            Some((duration, curve)) => window.set_animation(duration, floats(curve)),
+        match curve {
+            Some((duration, curve)) => window.set_curve(duration, floats(curve)),
             None => window.unset_animation(),
         }
         self.conn.flush().unwrap();

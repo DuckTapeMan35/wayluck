@@ -47,7 +47,7 @@ fn placed_window(session: &mut Session) -> (Wm, Window, u32) {
 fn a_window_placed_elsewhere_is_drawn_moving_there() {
     let mut session = Session::start();
     let (wm, _window, id) = placed_window(&mut session);
-    wm.set_animation(1000, LINEAR);
+    wm.set_curve(1000, LINEAR);
     let asked = Instant::now();
     wm.place(id, ELSEWHERE, false, None);
     let (x, y, ..) = wait_for(|| animating(&mut session, "victim"), "it to move");
@@ -87,7 +87,7 @@ fn session_window(session: &mut Session) -> i32 {
 fn an_instant_window_goes_straight_there() {
     let mut session = Session::start();
     let (wm, _window, id) = placed_window(&mut session);
-    wm.set_animation(60_000, LINEAR);
+    wm.set_curve(60_000, LINEAR);
     wm.place(id, ELSEWHERE, true, None);
     wait_for(
         || (session_window(&mut session) == ELSEWHERE.0).then_some(()),
@@ -100,9 +100,9 @@ fn an_instant_window_goes_straight_there() {
 fn a_window_of_its_own_moves_as_set_for_it() {
     let mut session = Session::start();
     let (wm, _window, id) = placed_window(&mut session);
-    wm.set_animation(60_000, LINEAR);
+    wm.set_curve(60_000, LINEAR);
     // Not this one.
-    wm.set_window_animation(id, Some((0, LINEAR)));
+    wm.set_window_curve(id, Some((0, LINEAR)));
     wm.place(id, ELSEWHERE, false, None);
     wait_for(
         || (session_window(&mut session) == ELSEWHERE.0).then_some(()),
@@ -110,7 +110,7 @@ fn a_window_of_its_own_moves_as_set_for_it() {
     );
     assert_eq!(animating(&mut session, "victim"), None);
     // As all of them again.
-    wm.set_window_animation(id, None);
+    wm.set_window_curve(id, None);
     wm.place(id, PLACE, false, None);
     wait_for(|| animating(&mut session, "victim"), "it to move");
 }
@@ -119,7 +119,7 @@ fn a_window_of_its_own_moves_as_set_for_it() {
 fn placed_again_on_its_way_it_goes_from_where_it_is() {
     let mut session = Session::start();
     let (wm, _window, id) = placed_window(&mut session);
-    wm.set_animation(60_000, LINEAR);
+    wm.set_curve(60_000, LINEAR);
     wm.place(id, ELSEWHERE, false, None);
     wait_for(|| animating(&mut session, "victim"), "it to move");
     std::thread::sleep(Duration::from_millis(300));
@@ -141,7 +141,7 @@ fn placed_again_on_its_way_it_goes_from_where_it_is() {
 fn an_appearing_window_starts_where_it_says() {
     let mut session = Session::start();
     let wm = Wm::start(&session);
-    wm.set_animation(60_000, LINEAR);
+    wm.set_curve(60_000, LINEAR);
     let _window = Window::open(&session, 0xff00ff00);
     let id = wm.window("victim").id;
     // Placed where it is (PLACE), it doesn't move...
@@ -171,7 +171,7 @@ fn a_closed_window_stops_being_animated() {
     let x = XWindow::open(&session.x_display, "xwin", "XWin", (200, 200));
     let id = wm.window("xwin").id;
     session.window("xwin");
-    wm.set_animation(60_000, LINEAR);
+    wm.set_curve(60_000, LINEAR);
     wm.place(id, ELSEWHERE, false, None);
     wait_for(|| animating(&mut session, "xwin"), "the window to move");
     drop(x);
@@ -189,7 +189,7 @@ fn on_its_way_a_window_is_drawn_where_it_is_stretched() {
     let mut session = Session::start();
     let (wm, _window, id) = placed_window(&mut session);
     // Growing from a small rectangle at the top right, slowly.
-    wm.set_animation(60_000, LINEAR);
+    wm.set_curve(60_000, LINEAR);
     wm.place(id, ELSEWHERE, false, Some((1000, 0, 40, 30)));
     wait_for(|| animating(&mut session, "victim"), "it to move");
     let shot = screenshot(&session);
@@ -208,7 +208,7 @@ fn on_its_way_a_window_is_drawn_where_it_is_stretched() {
 fn once_there_a_window_is_drawn_where_its_placed() {
     let mut session = Session::start();
     let (wm, _window, id) = placed_window(&mut session);
-    wm.set_animation(200, LINEAR);
+    wm.set_curve(200, LINEAR);
     wm.place(id, ELSEWHERE, false, None);
     wait_for(|| animating(&mut session, "victim"), "it to move");
     wait_for(
@@ -240,7 +240,7 @@ fn frames(session: &mut Session) -> u64 {
 fn frames_are_drawn_while_a_window_moves_and_then_no_more() {
     let mut session = Session::start();
     let (wm, _window, id) = placed_window(&mut session);
-    wm.set_animation(500, LINEAR);
+    wm.set_curve(500, LINEAR);
     wm.place(id, ELSEWHERE, false, None);
     wait_for(|| animating(&mut session, "victim"), "it to move");
     let before = frames(&mut session);
@@ -266,7 +266,7 @@ fn frames_are_drawn_while_a_window_moves_and_then_no_more() {
 fn placed_again_where_its_going_it_keeps_going() {
     let mut session = Session::start();
     let (wm, _window, id) = placed_window(&mut session);
-    wm.set_animation(1000, LINEAR);
+    wm.set_curve(1000, LINEAR);
     let asked = Instant::now();
     wm.place(id, ELSEWHERE, false, None);
     wait_for(|| animating(&mut session, "victim"), "it to move");
@@ -286,7 +286,7 @@ fn an_instant_window_isnt_animated_while_others_are() {
     let _x = XWindow::open(&session.x_display, "xwin", "XWin", (200, 200));
     let other = wm.window("xwin").id;
     session.window("xwin");
-    wm.set_animation(60_000, LINEAR);
+    wm.set_curve(60_000, LINEAR);
     // Dragged, while the other makes room.
     wm.place_together(
         &[(id, ELSEWHERE, true), (other, (100, 450, 400, 300), false)],
@@ -303,7 +303,7 @@ fn an_instant_transaction_animates_nothing() {
     let _x = XWindow::open(&session.x_display, "xwin", "XWin", (200, 200));
     let other = wm.window("xwin").id;
     session.window("xwin");
-    wm.set_animation(60_000, LINEAR);
+    wm.set_curve(60_000, LINEAR);
     wm.place_together(
         &[(id, ELSEWHERE, false), (other, (100, 450, 400, 300), false)],
         true,
@@ -313,4 +313,50 @@ fn an_instant_transaction_animates_nothing() {
         "it to be placed",
     );
     assert_eq!(session.command("animating"), "");
+}
+
+#[test]
+fn a_window_on_a_spring_is_drawn_moving_there_and_settles() {
+    let mut session = Session::start();
+    let (wm, _window, id) = placed_window(&mut session);
+    // Critically damped, ω 10 a second: settled within a second.
+    wm.set_spring(100.0, 1.0);
+    wm.place(id, ELSEWHERE, false, None);
+    let (x, ..) = wait_for(|| animating(&mut session, "victim"), "it to move");
+    assert!(x < ELSEWHERE.0, "at {x}");
+    wait_for(
+        || animating(&mut session, "victim").is_none().then_some(()),
+        "it to settle",
+    );
+    assert_eq!(session_window(&mut session), ELSEWHERE.0);
+    assert_eq!(wm.failed(), 0);
+}
+
+#[test]
+fn placed_again_on_its_way_a_window_on_a_spring_keeps_its_speed() {
+    let mut session = Session::start();
+    let (wm, _window, id) = placed_window(&mut session);
+    // Soft (ω 5 a second): going right well after it's sent back.
+    wm.set_spring(25.0, 1.0);
+    wm.place(id, ELSEWHERE, false, None);
+    std::thread::sleep(Duration::from_millis(300));
+    let (sent_back_at, ..) = animating(&mut session, "victim").expect("over too soon");
+    wm.place(id, PLACE, false, None);
+    // Still going right a while, then back: further right than it was.
+    let started = Instant::now();
+    let mut furthest = sent_back_at;
+    while started.elapsed() < Duration::from_millis(200) {
+        if let Some((x, ..)) = animating(&mut session, "victim") {
+            furthest = furthest.max(x);
+        }
+    }
+    assert!(
+        furthest > sent_back_at + 12,
+        "sent back at {sent_back_at}, went to {furthest}"
+    );
+    wait_for(
+        || animating(&mut session, "victim").is_none().then_some(()),
+        "it to settle",
+    );
+    assert_eq!(session_window(&mut session), PLACE.0);
 }

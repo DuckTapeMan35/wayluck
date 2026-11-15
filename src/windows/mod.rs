@@ -26,7 +26,7 @@ use crate::{
         workspaces::WorkspaceId,
     },
 };
-pub use animation::{Curve, Setting};
+pub use animation::{Curve, Setting, Spring};
 pub use apply::Change;
 pub use atomic::Pending;
 pub use list::ToplevelList;
@@ -228,7 +228,7 @@ impl Windows {
 
     /// How windows move: all of them, or (with id) one, whatever all of
     /// them do (None: as all of them do again).
-    pub fn set_animation(&mut self, id: Option<WindowId>, setting: Option<Setting>) {
+    pub fn set_curve(&mut self, id: Option<WindowId>, setting: Option<Setting>) {
         match id {
             None => self.animation = setting,
             Some(id) => match setting {
@@ -255,7 +255,7 @@ impl Windows {
         let setting = (self.animation_of.get(&id))
             .or(self.animation.as_ref())?
             .clone();
-        (!setting.duration.is_zero()).then_some(setting)
+        setting.moves().then_some(setting)
     }
 
     /// The ids window id's surfaces are drawn under, stretched on its way

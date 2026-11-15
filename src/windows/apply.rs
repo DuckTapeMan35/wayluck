@@ -1,7 +1,10 @@
 //! Changes the window manager asked for, together: what clients are told
 //! at once (sizes, states), and what's shown, once they've redrawn for it.
 
-use super::{WindowId, animation::Animation};
+use super::{
+    WindowId,
+    animation::{Animation, Motion},
+};
 use crate::{
     Wayluck,
     layers::look::LookChange,
@@ -276,6 +279,11 @@ impl Wayluck {
                             continue;
                         }
                         let from = starts.get(&id).copied().or(self.drawn_in(id, scene, now));
+                        // On a spring, it goes on at the speed it had (where it's
+                        // said to start from, it starts still).
+                        let speed = (self.windows.animations.get(&id))
+                            .filter(|_| !starts.contains_key(&id))
+                            .map_or([0.0; 4], |a| a.speed(now));
                         self.scenes.place(scene, id, rect.loc);
                         self.windows.placed.insert(id, (scene, rect));
                         self.windows.animations.remove(&id);
@@ -287,8 +295,7 @@ impl Wayluck {
                                 from,
                                 to: rect,
                                 start: now,
-                                duration: setting.duration,
-                                curve: setting.curve,
+                                motion: Motion::new(setting, speed),
                                 ids: Default::default(),
                             };
                             self.windows.animations.insert(id, animation);

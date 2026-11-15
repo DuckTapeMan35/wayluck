@@ -364,16 +364,24 @@ impl Dispatch<WayluckWmWindowV1, WindowId> for Wayluck {
             // Asking the client: it may close, or not.
             wayluck_wm_window_v1::Request::Close => state.close_window(*id),
             // The manager's error, if the curve isn't one.
-            wayluck_wm_window_v1::Request::SetAnimation { duration, curve } => {
+            wayluck_wm_window_v1::Request::SetCurve { duration, curve } => {
                 let Some(manager) = state.wm.manager.clone() else {
                     return;
                 };
-                if let Some(setting) = super::animation(&manager, duration, &curve) {
-                    state.windows.set_animation(Some(*id), Some(setting));
+                if let Some(setting) = super::curve_setting(&manager, duration, &curve) {
+                    state.windows.set_curve(Some(*id), Some(setting));
+                }
+            }
+            wayluck_wm_window_v1::Request::SetSpring { stiffness, damping } => {
+                let Some(manager) = state.wm.manager.clone() else {
+                    return;
+                };
+                if let Some(setting) = super::spring(&manager, stiffness, damping) {
+                    state.windows.set_curve(Some(*id), Some(setting));
                 }
             }
             wayluck_wm_window_v1::Request::UnsetAnimation => {
-                state.windows.set_animation(Some(*id), None);
+                state.windows.set_curve(Some(*id), None);
             }
             wayluck_wm_window_v1::Request::Destroy => {}
         }

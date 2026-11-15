@@ -18,7 +18,7 @@ pub use bindings::modifier_bits;
 use crate::{
     Wayluck,
     render::blur::Strength,
-    windows::{Curve, Setting, WindowId, Windows},
+    windows::{Curve, Setting, Spring, WindowId, Windows},
 };
 use bindings::{ButtonBinding, KeyBinding};
 use protocol::{
@@ -248,12 +248,20 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
                     state.wm.pointer_grabbed = false;
                 }
             }
-            wayluck_wm_manager_v1::Request::SetAnimation { duration, curve } => {
-                let Some(setting) = animation(manager, duration, &curve) else {
+            wayluck_wm_manager_v1::Request::SetCurve { duration, curve } => {
+                let Some(setting) = curve_setting(manager, duration, &curve) else {
                     return;
                 };
                 if state.wm.manager.as_ref() == Some(manager) {
-                    state.windows.set_animation(None, Some(setting));
+                    state.windows.set_curve(None, Some(setting));
+                }
+            }
+            wayluck_wm_manager_v1::Request::SetSpring { stiffness, damping } => {
+                let Some(setting) = spring(manager, stiffness, damping) else {
+                    return;
+                };
+                if state.wm.manager.as_ref() == Some(manager) {
+                    state.windows.set_curve(None, Some(setting));
                 }
             }
             wayluck_wm_manager_v1::Request::SetName { name } => {
@@ -297,10 +305,27 @@ impl Dispatch<WayluckWmManagerV1, ()> for Wayluck {
     }
 }
 
+/// A spring, as a window manager sets it; None (and the error posted on
+/// manager) if it isn't one.
+pub(super) fn spring(
+    manager: &WayluckWmManagerV1,
+    stiffness: f64,
+    damping: f64,
+) -> Option<Setting> {
+    let Some(spring) = Spring::new(stiffness, damping) else {
+        manager.post_error(
+            wayluck_wm_manager_v1::Error::InvalidSpring,
+            "set_spring: a stiffness below 0, or a damping not above 0",
+        );
+        return None;
+    };
+    Some(Setting::Spring(spring))
+}
+
 /// How windows move, as the window manager asks (duration in
 /// milliseconds, the curve as an array of 32-bit floats); None if the curve
 /// isn't one: manager's error.
-pub(super) fn animation(
+pub(super) fn curve_setting(
     manager: &WayluckWmManagerV1,
     duration: u32,
     curve: &[u8],
@@ -312,12 +337,12 @@ pub(super) fn animation(
     let Some(curve) = curve else {
         manager.post_error(
             wayluck_wm_manager_v1::Error::InvalidCurve,
-            "set_animation: the curve isn't 2 to 1024 floats, all numbers",
+            "set_curve: the curve isn't 2 to 1024 floats, all numbers",
         );
         return None;
     };
     let duration = Duration::from_millis(duration.into());
-    Some(Setting { duration, curve })
+    Some(Setting::Curve { duration, curve })
 }
 
 /// The window a window manager's object stands for.
