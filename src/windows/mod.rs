@@ -33,7 +33,7 @@ pub use list::ToplevelList;
 use smithay::{
     desktop::Window,
     reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{Logical, Rectangle},
+    utils::{Logical, Point, Rectangle, Size},
     wayland::{
         compositor::{add_pre_commit_hook, with_states},
         seat::WaylandFocus,
@@ -110,6 +110,9 @@ pub struct Windows {
     /// Where each window was placed last, in which scene: where it's
     /// drawn, unless it's on its way there.
     placed: HashMap<WindowId, (SceneId, Rectangle<i32, Logical>)>,
+    /// Windows last resized from their start (left, top): while their
+    /// client catches up, they're drawn from the edge that stays.
+    from_end: HashMap<WindowId, (bool, bool)>,
     /// How windows move, as the window manager set it for all of them
     /// (None: they don't), and for some on their own.
     animation: Option<Setting>,
@@ -216,8 +219,70 @@ impl Windows {
         self.waiting.remove(&id);
         self.animations.remove(&id);
         self.placed.remove(&id);
+        self.from_end.remove(&id);
         self.animation_of.remove(&id);
         self.by_id.remove(&id)
+    }
+
+    /// Window id is placed at rect in scene: which edges stay where they
+    /// were, to draw it from while its client catches up. On each axis,
+    /// its end if only its start moved; its start if its end did; as it
+    /// was if neither did (dragged sideways, its top's still the one).
+    fn placed_at(&mut self, id: WindowId, scene: SceneId, rect: Rectangle<i32, Logical>) {
+        let before = (self.placed.insert(id, (scene, rect)))
+            .filter(|(s, _)| *s == scene)
+            .map(|(_, r)| r);
+        let was = self.from_end.get(&id).copied().unwrap_or_default();
+        let Some(before) = before else {
+            self.from_end.remove(&id);
+            return;
+        };
+        let axis = |start: i32, end: i32, new_start: i32, new_end: i32, was: bool| match (
+            start != new_start,
+            end != new_end,
+        ) {
+            (true, false) => true,
+            (_, true) => false,
+            (false, false) => was,
+        };
+        let x = axis(
+            before.loc.x,
+            before.loc.x + before.size.w,
+            rect.loc.x,
+            rect.loc.x + rect.size.w,
+            was.0,
+        );
+        let y = axis(
+            before.loc.y,
+            before.loc.y + before.size.h,
+            rect.loc.y,
+            rect.loc.y + rect.size.h,
+            was.1,
+        );
+        self.from_end.insert(id, (x, y));
+    }
+
+    /// Where window id, placed at at, is drawn at size (what its client
+    /// drew): at at, unless its client hasn't caught up with the size it's
+    /// placed at and it was resized from its start: then its end stays put.
+    pub fn drawn_from(
+        &self,
+        id: WindowId,
+        at: Point<i32, Logical>,
+        size: Size<i32, Logical>,
+    ) -> Point<i32, Logical> {
+        let (Some((_, placed)), Some(&(x, y))) = (self.placed.get(&id), self.from_end.get(&id))
+        else {
+            return at;
+        };
+        let mut at = at;
+        if x {
+            at.x += placed.size.w - size.w;
+        }
+        if y {
+            at.y += placed.size.h - size.h;
+        }
+        at
     }
 
     /// Where window id is drawn in its scene at now, while it's on its way

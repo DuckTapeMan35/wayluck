@@ -296,7 +296,7 @@ impl Wayluck {
                             .filter(|_| !starts.contains_key(&id))
                             .map_or([0.0; 4], |a| a.speed(now));
                         self.scenes.place(scene, id, rect.loc);
-                        self.windows.placed.insert(id, (scene, rect));
+                        self.windows.placed_at(id, scene, rect);
                         self.windows.animations.remove(&id);
                         let setting = self.windows.animation_for(id).filter(|_| !instant(id));
                         if let (Some(from), Some(setting)) = (from, setting)

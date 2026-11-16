@@ -178,11 +178,12 @@ where
             continue;
         };
 
-        // On its way somewhere: drawn where it is now, stretched to that
-        // size (whatever size its client drew).
+        // On its way somewhere: drawn where it is now, stretched to that size (whatever size its client drew).
         let size = window.geometry().size;
         let moving = state.windows.animated_at(id, now);
-        let (at, drawn_size) = moving.map_or((at, size), |r| (r.loc, r.size));
+        // Not: where it's placed, from the edge that stays while its client catches up with a resize.
+        let still = (state.windows.drawn_from(id, at, size), size);
+        let (at, drawn_size) = moving.map_or(still, |r| (r.loc, r.size));
         // The window, then its border behind it (with its corners' radius).
         let border = state.windows.border_mut(id);
         let radius = border.as_ref().map_or(0, |b| b.radius);

@@ -4,7 +4,9 @@
 mod harness;
 
 use harness::{
-    Session, wait_for,
+    Session,
+    capture::screenshot,
+    wait_for,
     wayland::Window,
     wm::{PLACE, Wm},
 };
@@ -115,4 +117,36 @@ fn a_window_placed_instantly_isnt_waited_for() {
         "it to be shown where it's placed",
     );
     assert_eq!((x, y, w, h), (500, 300, PLACE.2, PLACE.3));
+}
+
+#[test]
+fn resized_from_its_left_its_right_edge_stays_while_its_client_catches_up() {
+    const GREEN: u32 = 0x00ff00;
+    let mut session = Session::start();
+    let wm = Wm::start(&session);
+    // Slow enough to look before it has redrawn.
+    let _window = Window::slow(&session, 0xff00ff00, "victim", Duration::from_millis(500));
+    let id = wm.window("victim").id;
+    session.window("victim");
+    let (x, y, w, h) = PLACE;
+    let right = x + w;
+
+    // Its left edge dragged 50 left, as a resize from there does.
+    wm.place(id, (x - 50, y, w + 50, h), true, None);
+    wait_for(
+        || (session.window("victim").0 == x - 50).then_some(()),
+        "it placed",
+    );
+    let shot = screenshot(&session);
+    assert_eq!(shot.at(right - 5, y + 10), GREEN, "its right edge moved");
+    assert_ne!(shot.at(right + 5, y + 10), GREEN, "its right edge moved");
+
+    // Once it has, all of it's where it's placed.
+    wait_for(
+        || (screenshot(&session).at(x - 45, y + 10) == GREEN).then_some(()),
+        "it redrawn at its new size",
+    );
+    let shot = screenshot(&session);
+    assert_eq!(shot.at(right - 5, y + 10), GREEN);
+    assert_ne!(shot.at(right + 5, y + 10), GREEN);
 }
