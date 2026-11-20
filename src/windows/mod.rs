@@ -262,6 +262,11 @@ impl Windows {
         self.from_end.insert(id, (x, y));
     }
 
+    /// The size window id is placed at, if the window manager placed it.
+    pub fn placed_size(&self, id: WindowId) -> Option<Size<i32, Logical>> {
+        self.placed.get(&id).map(|(_, rect)| rect.size)
+    }
+
     /// Where window id, placed at at, is drawn at size (what its client
     /// drew): at at, unless its client hasn't caught up with the size it's
     /// placed at and it was resized from its start: then its end stays put.
@@ -454,11 +459,10 @@ impl Wayluck {
     /// With no window manager, shown a step down and right of the last one.
     pub fn add_window(&mut self, window: Window) -> WindowId {
         let id = self.windows.insert(window.clone());
-        // Its redraws may be held back for a transaction.
-        if let Some(toplevel) = window.toplevel() {
-            add_pre_commit_hook::<Self, _>(toplevel.wl_surface(), |state, _, surface| {
-                state.hold_back(surface)
-            });
+        // Its redraws may be held back for a transaction (an X window has
+        // its surface by now).
+        if let Some(surface) = window.wl_surface() {
+            add_pre_commit_hook::<Self, _>(&surface, |state, _, surface| state.hold_back(surface));
         }
         if self.wm.manager.is_none() {
             let at = scenes::cascade(self.windows.len() - 1);

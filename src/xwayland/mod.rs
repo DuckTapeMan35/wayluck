@@ -141,6 +141,11 @@ impl XWaylandShellHandler for Wayluck {
 }
 
 impl XwmHandler for Wayluck {
+    /// Its client has drawn at the size it was told.
+    fn sync_request_acked(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.x_synced(&window);
+    }
+
     fn xwm_state(&mut self, _xwm: XwmId) -> &mut X11Wm {
         // Its events come only once it's started.
         self.xwm

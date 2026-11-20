@@ -4,6 +4,7 @@
 use super::{
     WindowId,
     animation::{Animation, Motion},
+    atomic::{PATIENCE, Redraw},
 };
 use crate::{
     Wayluck,
@@ -152,6 +153,7 @@ impl Wayluck {
 
         // What clients are told.
         let mut resized = Vec::new();
+        let mut x_resized = Vec::new();
         for change in &changes {
             match *change {
                 Change::Place(_, id, rect) => {
@@ -166,11 +168,26 @@ impl Wayluck {
                             resized.push(id);
                         }
                     } else if let Some(x11) = window.x11_surface() {
-                        // Told at once, and not waited for: where it goes, it
-                        // hears when it's shown there (sync_space).
+                        // Told its size at once; where it goes, it hears when
+                        // it's shown there. One that says when
+                        // it has drawn at a new size is waited for as a
+                        // Wayland window is (and not longer: its commits are
+                        // held back in Xwayland till then).
                         let rect = Rectangle::new(x11.last_configure().loc, rect.size);
-                        if let Err(e) = x11.configure(rect) {
-                            tracing::debug!("X: can't resize window {}: {e}", x11.window_id());
+                        let size = x11.pending_configure().unwrap_or(x11.last_configure()).size;
+                        let synced =
+                            x11.sync_request_supported() && size != rect.size && !instant(id);
+                        let told = if synced {
+                            x11.configure_with_sync(rect, Some(PATIENCE))
+                        } else {
+                            x11.configure(rect)
+                        };
+                        match told {
+                            Ok(()) if synced => x_resized.push((id, rect.size)),
+                            Ok(()) => {}
+                            Err(e) => {
+                                tracing::debug!("X: can't resize window {}: {e}", x11.window_id())
+                            }
                         }
                     }
                     self.windows.decided.insert(id);
@@ -218,9 +235,9 @@ impl Wayluck {
         let serials = self.send_configures();
 
         // What's shown: now, or when the resized windows have redrawn.
-        let waiting: HashMap<_, _> = resized
-            .into_iter()
-            .filter_map(|id| serials.get(&id).map(|s| (id, *s)))
+        let waiting: HashMap<_, _> = (resized.into_iter())
+            .filter_map(|id| serials.get(&id).map(|s| (id, Redraw::Acked(*s))))
+            .chain((x_resized.into_iter()).map(|(id, size)| (id, Redraw::Synced(size))))
             .collect();
         if waiting.is_empty() {
             self.show(changes);

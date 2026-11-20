@@ -629,3 +629,49 @@ fn the_window_manager_closes_x_windows() {
     wm.close(heard.id);
     wm.wait_for(heard.id, "the X window to close", |w| w.closed);
 }
+
+#[test]
+fn an_x_window_resized_is_shown_once_it_has_drawn_at_its_new_size() {
+    const SLOW: Duration = Duration::from_millis(100);
+    let mut session = Session::start();
+    let wm = Wm::start(&session);
+    let _x = XWindow::open_synced(&session.x_display, "xwin", "XWin", (200, 200), SLOW);
+    let id = wm.window("xwin").id;
+    wait_for(
+        || (session.window("xwin") == wm::PLACE).then_some(()),
+        "it placed",
+    );
+    // Its answer was what was waited for, whether Xwayland had anything new to show after it or not.
+    assert!(
+        !session.log().contains("too slow"),
+        "its answer wasn't heard"
+    );
+    // Elsewhere, and smaller: shown there only once its client says it has
+    // drawn at that size, and at it.
+    let asked = Instant::now();
+    wm.place(id, (500, 300, 200, 150), false, None);
+    let shown = wait_for(
+        || Some(session.window("xwin")).filter(|r| r.0 == 500),
+        "it shown where it's placed",
+    );
+    assert!(
+        asked.elapsed() >= SLOW,
+        "shown before it drew, after {:?}",
+        asked.elapsed()
+    );
+    assert_eq!(shown, (500, 300, 200, 150));
+    assert_eq!(wm.failed(), 0);
+}
+
+#[test]
+fn an_x_window_too_slow_to_answer_still_gets_the_size_its_placed_at() {
+    let mut session = Session::start();
+    let _wm = Wm::start(&session);
+    // Answers well after wayluck stops waiting for it.
+    let slow = Duration::from_secs(1);
+    let _x = XWindow::open_synced(&session.x_display, "xwin", "XWin", (200, 200), slow);
+    wait_for(
+        || (session.window("xwin") == wm::PLACE).then_some(()),
+        "it placed",
+    );
+}

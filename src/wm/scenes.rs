@@ -190,25 +190,25 @@ impl Wayluck {
             }
             for (window, at) in scene.windows() {
                 if let Some(w) = self.windows.get(window) {
-                    placed.push((w.clone(), area.loc + at));
+                    placed.push((w.clone(), area.loc + at, self.windows.placed_size(window)));
                 }
             }
         }
         let gone: Vec<_> = (self.space.elements())
-            .filter(|w| !placed.iter().any(|(p, _)| p == *w))
+            .filter(|w| !placed.iter().any(|(p, _, _)| p == *w))
             .cloned()
             .collect();
         for window in gone {
             self.space.unmap_elem(&window);
         }
         // Each mapped on top of the last: the order is the stacking.
-        for (window, at) in placed {
+        for (window, at, size) in placed {
             // An X client hears where its window is: X has one screen for
             // all outputs, and places its menus and tooltips by it.
             if let Some(x11) = window.x11_surface()
                 && x11.last_configure().loc != at
             {
-                let size = x11.last_configure().size;
+                let size = size.unwrap_or(x11.last_configure().size);
                 if let Err(e) = x11.configure(Rectangle::new(at, size)) {
                     tracing::debug!("X: can't move window {}: {e}", x11.window_id());
                 }

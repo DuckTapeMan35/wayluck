@@ -13,6 +13,7 @@ use x11rb::{
     connection::Connection,
     protocol::{
         Event,
+        sync::{self, ConnectionExt as _},
         xinput::{self, ConnectionExt as _},
         xproto::{self, ConnectionExt as _},
     },
@@ -144,6 +145,17 @@ struct Atoms {
     pasted: xproto::Atom,
 }
 
+/// An X window's side of _NET_WM_SYNC_REQUEST.
+struct Sync {
+    counter: sync::Counter,
+    /// The _NET_WM_SYNC_REQUEST atom: what the message asking starts with.
+    request: xproto::Atom,
+    /// How long it takes to draw at a new size.
+    slow: Duration,
+    /// The value to set once it has: asked for, and not told the size yet.
+    asked: Option<sync::Int64>,
+}
+
 /// What an X window has copied, and what a paste got.
 #[derive(Default)]
 struct Clip {
@@ -170,24 +182,37 @@ impl XWindow {
         size: (u16, u16),
         setup: impl FnOnce(&RustConnection, xproto::Window),
     ) -> XWindow {
-        Self::create(display, title, class, None, size, setup)
+        Self::create(display, title, class, None, size, None, setup)
+    }
+
+    /// Mapped, and answering _NET_WM_SYNC_REQUEST: it says it has drawn at
+    /// a new size, slow after it's told it.
+    pub fn open_synced(
+        display: &str,
+        title: &str,
+        class: &str,
+        size: (u16, u16),
+        slow: Duration,
+    ) -> XWindow {
+        Self::create(display, title, class, None, size, Some(slow), |_, _| {})
     }
 
     /// A menu, a tooltip: override-redirect, so no window manager places
     /// it; it's shown where it says, at (in X's coordinates, the global
     /// ones), as soon as it's mapped.
     pub fn open_menu(display: &str, title: &str, at: (i16, i16), size: (u16, u16)) -> XWindow {
-        Self::create(display, title, "XMenu", Some(at), size, |_, _| {})
+        Self::create(display, title, "XMenu", Some(at), size, None, |_, _| {})
     }
 
     /// A window the window manager places (at None), or an override-redirect
-    /// one at a place of its own.
+    /// one at a place of its own answering sync requests slow after it’s told a new size, if synced.
     fn create(
         display: &str,
         title: &str,
         class: &str,
         at: Option<(i16, i16)>,
         size: (u16, u16),
+        synced: Option<Duration>,
         setup: impl FnOnce(&RustConnection, xproto::Window),
     ) -> XWindow {
         let (conn, screen) = RustConnection::connect(Some(display)).expect("can't reach Xwayland");
@@ -196,7 +221,11 @@ impl XWindow {
         let attributes = xproto::CreateWindowAux::new()
             .background_pixel(0x3366cc)
             .override_redirect(u32::from(at.is_some()))
-            .event_mask(xproto::EventMask::KEY_PRESS | xproto::EventMask::FOCUS_CHANGE);
+            .event_mask(
+                xproto::EventMask::KEY_PRESS
+                    | xproto::EventMask::FOCUS_CHANGE
+                    | xproto::EventMask::STRUCTURE_NOTIFY,
+            );
         let (x, y) = at.unwrap_or_default();
         conn.create_window(
             0,
@@ -247,6 +276,33 @@ impl XWindow {
             targets: atom("TARGETS"),
             pasted: atom("WAYLUCK_TEST_PASTED"),
         };
+        // Synced: a counter it sets once it has drawn, where the window manager looks for it.
+        let mut sync = synced.map(|slow| {
+            conn.sync_initialize(3, 1).unwrap().reply().unwrap();
+            let counter = conn.generate_id().unwrap();
+            let zero = sync::Int64 { hi: 0, lo: 0 };
+            conn.sync_create_counter(counter, zero).unwrap();
+            let property = atom("_NET_WM_SYNC_REQUEST_COUNTER");
+            let cardinal = xproto::AtomEnum::CARDINAL;
+            conn.change_property32(replace, window, property, cardinal, &[counter])
+                .unwrap();
+            let request = atom("_NET_WM_SYNC_REQUEST");
+            let protocols = atom("WM_PROTOCOLS");
+            conn.change_property32(
+                replace,
+                window,
+                protocols,
+                xproto::AtomEnum::ATOM,
+                &[request],
+            )
+            .unwrap();
+            Sync {
+                counter,
+                request,
+                slow,
+                asked: None,
+            }
+        });
         setup(&conn, window);
         conn.map_window(window).unwrap();
         conn.get_input_focus().unwrap().reply().unwrap(); // all done, once answered
@@ -274,6 +330,26 @@ impl XWindow {
                         Event::SelectionNotify(e) => {
                             let got = received(&polled, window, &e);
                             clipped.lock().unwrap().pasted = Some(got);
+                        }
+                        // Asked to say when it has drawn at the size it's told next.
+                        Event::ClientMessage(e) => {
+                            let data = e.data.as_data32();
+                            if let Some(sync) = &mut sync
+                                && data[0] == sync.request
+                            {
+                                let (lo, hi) = (data[2], data[3] as i32);
+                                sync.asked = Some(sync::Int64 { hi, lo });
+                            }
+                        }
+                        // Told it: drawn (X paints its background), slowly.
+                        Event::ConfigureNotify(_) => {
+                            if let Some(sync) = &mut sync
+                                && let Some(value) = sync.asked.take()
+                            {
+                                sleep(sync.slow);
+                                let _ = polled.sync_set_counter(sync.counter, value);
+                                let _ = polled.flush();
+                            }
                         }
                         _ => {}
                     }
