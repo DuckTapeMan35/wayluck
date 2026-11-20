@@ -33,20 +33,10 @@ impl Wayluck {
     }
 
     /// A mouse or touchpad moved (on hardware): by so much from where the
-    /// pointer is, kept on the output.
+    /// pointer is, kept on monitors.
     pub(super) fn on_relative_motion<I: InputBackend>(&mut self, event: I::PointerMotionEvent) {
-        let pointer = self.seat.get_pointer().unwrap();
-        let mut location = pointer.current_location() + event.delta();
-        if let Some(area) = self
-            .space
-            .outputs()
-            .next()
-            .and_then(|o| self.space.output_geometry(o))
-        {
-            let (x0, y0) = (area.loc.x as f64, area.loc.y as f64);
-            location.x = location.x.clamp(x0, x0 + area.size.w as f64 - 1.0);
-            location.y = location.y.clamp(y0, y0 + area.size.h as f64 - 1.0);
-        }
+        let from = self.seat.get_pointer().unwrap().current_location();
+        let location = self.keep_on_monitors(from, from + event.delta());
         self.move_pointer(location, event.time());
     }
 

@@ -35,6 +35,7 @@ pub struct Layer {
     effects: ExtBackgroundEffectManagerV1,
     layer: ZwlrLayerSurfaceV1,
     surface: WlSurface,
+    closed: Arc<AtomicBool>,
 }
 
 struct Client {
@@ -43,6 +44,7 @@ struct Client {
     argb: u32,
     height: u32,
     shown: Arc<AtomicBool>,
+    closed: Arc<AtomicBool>,
 }
 
 impl Layer {
@@ -64,12 +66,14 @@ impl Layer {
         layer.set_exclusive_zone(height as i32);
         surface.commit();
         let shown = Arc::new(AtomicBool::new(false));
+        let closed = Arc::new(AtomicBool::new(false));
         let mut client = Client {
             shm,
             surface: surface.clone(),
             argb,
             height,
             shown: shown.clone(),
+            closed: closed.clone(),
         };
         std::thread::spawn(move || while queue.blocking_dispatch(&mut client).is_ok() {});
         wait_for(
@@ -83,7 +87,13 @@ impl Layer {
             effects,
             layer,
             surface,
+            closed,
         }
+    }
+
+    /// Has wayluck closed it (its output gone, say)?
+    pub fn closed(&self) -> bool {
+        self.closed.load(Ordering::Relaxed)
     }
 
     /// Ask for what's behind it blurred where rect is (x, y, width, height,
@@ -116,6 +126,9 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for Client {
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
+        if let zwlr_layer_surface_v1::Event::Closed = event {
+            client.closed.store(true, Ordering::Relaxed);
+        }
         if let zwlr_layer_surface_v1::Event::Configure { serial, width, .. } = event {
             layer.ack_configure(serial);
             let (w, h) = (width.max(1) as i32, client.height as i32);

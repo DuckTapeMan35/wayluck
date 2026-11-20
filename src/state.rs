@@ -5,6 +5,7 @@ use crate::{
     capture::picker::Picking,
     capture::screencopy,
     layers::look::Look,
+    monitors::Monitor,
     render::cursor::Cursor,
     windows::{Pending, Taskbars, ToplevelList, Windows},
     wm::{
@@ -12,8 +13,9 @@ use crate::{
         scenes::{SceneId, Scenes},
         virtual_output::VirtualOutput,
         workspace_list::WorkspaceList,
+        workspaces::Workspaces,
     },
-    xwayland::WaylandSelections,
+    xwayland::{Door, Hints, Strut, WaylandSelections},
 };
 use smithay::{
     backend::allocator::dmabuf::Dmabuf,
@@ -111,9 +113,11 @@ pub struct Wayluck {
     /// Where windows are: in scenes, shown on outputs.
     pub scenes: Scenes,
     /// The window manager's workspaces, as programs that list them see them.
-    pub workspaces: crate::wm::workspaces::Workspaces,
+    pub workspaces: Workspaces,
     /// wayluck's own scene, shown when there's no window manager.
     pub own_scene: SceneId,
+    /// Outputs with a screen behind them, left to right.
+    pub monitors: Vec<Monitor>,
     /// Outputs with no screen behind them.
     pub virtuals: Vec<VirtualOutput>,
     /// Virtual outputs made so far: the next is named after it.
@@ -146,15 +150,15 @@ pub struct Wayluck {
     pub layer_looks: HashMap<WlSurface, Look>,
     /// What X windows keep along the screen's edges (by X window id):
     /// counted while they're shown docks.
-    pub x_struts: HashMap<u32, crate::xwayland::Strut>,
+    pub x_struts: HashMap<u32, Strut>,
     /// What Wayland clients copied, for Xwayland.
     pub wayland_selections: WaylandSelections,
     /// Xwayland's display (":1"), for programs started in the session.
     pub x_display: Option<OsString>,
     /// Where X programs connect, and wait until Xwayland is ready.
-    pub x_door: Option<crate::xwayland::Door>,
+    pub x_door: Option<Door>,
     /// What X programs are told of their window manager, once Xwayland's ready.
-    pub x_hints: Option<crate::xwayland::Hints>,
+    pub x_hints: Option<Hints>,
     pub dmabuf_state: DmabufState,
     /// Explicit sync, if the GPU's driver can.
     pub syncobj_state: Option<DrmSyncobjState>,
@@ -276,6 +280,7 @@ impl Wayluck {
             scenes,
             workspaces: Default::default(),
             own_scene,
+            monitors: Vec::new(),
             virtuals: Vec::new(),
             virtual_count: 0,
             start_time: std::time::Instant::now(),

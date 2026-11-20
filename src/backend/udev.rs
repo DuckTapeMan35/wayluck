@@ -1,7 +1,9 @@
 //! Running on the hardware, from a TTY, as the session. libseat gives
 //! wayluck the GPU and the input devices (and takes them back while you're
-//! on another TTY); libinput reads the keyboards and mice; the first
-//! connected monitor shows what's drawn, a frame per vblank at most.
+//! on another TTY); libinput reads the keyboards and mice; every connected
+//! monitor shows what's drawn, a frame per vblank at most, each driven by
+//! a CRTC of its own. Monitors plugged in or out are found again (udev
+//! says the GPU changed).
 //!
 //! Ctrl+Alt+F1…F12 switch TTYs, and Ctrl+Alt+Backspace exits.
 
@@ -14,7 +16,7 @@ use crate::{
 use smithay::{
     backend::{
         allocator::{
-            Fourcc,
+            Format, Fourcc,
             dmabuf::Dmabuf,
             gbm::{GbmAllocator, GbmBufferFlags, GbmDevice},
         },
@@ -31,7 +33,7 @@ use smithay::{
             multigpu::{GpuManager, gbm::GbmGlesBackend},
         },
         session::{Event as SessionEvent, Session, libseat::LibSeatSession},
-        udev::{all_gpus, primary_gpu},
+        udev::{UdevBackend, UdevEvent, all_gpus, primary_gpu},
     },
     output::{Mode, Output, OutputModeSource, PhysicalProperties, Subpixel},
     reexports::{
@@ -46,7 +48,7 @@ use smithay::{
         drm_syncobj::{DrmSyncobjState, supports_syncobj_eventfd},
     },
 };
-use std::{cell::RefCell, error::Error, rc::Rc};
+use std::{cell::RefCell, collections::HashSet, error::Error, rc::Rc};
 
 type Gpus = GpuManager<GbmGlesBackend<GlesRenderer, DrmDeviceFd>>;
 type Compositor =
@@ -54,16 +56,29 @@ type Compositor =
 
 /// The backend's own state, shared by its event sources.
 struct Udev {
-    /// Kept for as long as wayluck has the session: dropping it gives the
-    /// TTY back.
+    /// Kept for as long as wayluck has the session: dropping it gives the TTY back.
     _session: LibSeatSession,
     /// The keyboards and mice: let go of with the GPU, taken back with it.
     libinput: Libinput,
     node: DrmNode,
     gpus: Gpus,
     drm: DrmDevice,
-    compositor: Compositor,
+    fd: DrmDeviceFd,
+    gbm: GbmDevice<DrmDeviceFd>,
+    /// What it can render into.
+    render_formats: Vec<Format>,
+    /// The monitors it drives.
+    screens: Vec<Screen>,
+}
+
+/// A monitor shown: its connector, the CRTC driving it, and what puts
+/// frames on it (smithay's DrmCompositor, which tracks damage and puts
+/// buffers straight on display planes when it can).
+struct Screen {
+    connector: connector::Handle,
+    crtc: crtc::Handle,
     output: Output,
+    compositor: Compositor,
     /// A frame is on its way to the screen: the next waits for its vblank.
     in_flight: bool,
     /// Something changed while one was: draw again at the vblank.
@@ -92,7 +107,7 @@ pub fn init(
         OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK,
     )?;
     let fd = DrmDeviceFd::new(DeviceFd::from(fd));
-    let (mut drm, drm_events) = DrmDevice::new(fd.clone(), true)?;
+    let (drm, drm_events) = DrmDevice::new(fd.clone(), true)?;
     // Explicit sync, if the GPU's driver can wait on its timelines.
     if supports_syncobj_eventfd(&fd) {
         let syncobj = DrmSyncobjState::new::<Wayluck>(&state.display_handle, fd.clone());
@@ -102,68 +117,11 @@ pub fn init(
     let gbm = GbmDevice::new(fd.clone())?;
     let mut gpus: Gpus = GpuManager::new(GbmGlesBackend::default())?;
     gpus.as_mut().add_node(node, gbm.clone())?;
-
-    // The first connected monitor, at the mode it prefers.
-    let (monitor, mode, crtc) = first_monitor(&fd)?;
-    let name = format!(
-        "{}-{}",
-        monitor.interface().as_str(),
-        monitor.interface_id()
-    );
-    let (w, h) = monitor.size().unwrap_or((0, 0));
-    let output = Output::new(
-        name.clone(),
-        PhysicalProperties {
-            size: (w as i32, h as i32).into(),
-            subpixel: Subpixel::Unknown,
-            make: "unknown".into(),
-            model: "unknown".into(),
-            serial_number: String::new(),
-        },
-    );
-    let _global = output.create_global::<Wayluck>(&state.display_handle);
-    let wl_mode = Mode::from(mode);
-    output.change_current_state(
-        Some(wl_mode),
-        Some(Transform::Normal),
-        None,
-        Some((0, 0).into()),
-    );
-    output.set_preferred(wl_mode);
-    state.space.map_output(&output, (0, 0));
-    tracing::info!(
-        "{name}: {}x{} at {} mHz",
-        wl_mode.size.w,
-        wl_mode.size.h,
-        wl_mode.refresh
-    );
-
-    // What puts frames on it: buffers the GPU renders into and the monitor
-    // can show, and smithay's DrmCompositor, which tracks damage and puts
-    // buffers straight on display planes when it can.
-    let surface = drm.create_surface(crtc, mode, &[monitor.handle()])?;
     let render_formats = {
         let mut renderer = gpus.single_renderer(&node)?;
-        renderer
-            .as_mut()
-            .egl_context()
-            .dmabuf_render_formats()
-            .clone()
+        let context = renderer.as_mut().egl_context();
+        context.dmabuf_render_formats().iter().copied().collect()
     };
-    let compositor = DrmCompositor::new(
-        OutputModeSource::Auto(output.downgrade()),
-        surface,
-        None,
-        GbmAllocator::new(
-            gbm.clone(),
-            GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
-        ),
-        GbmFramebufferExporter::new(gbm.clone(), node.into()),
-        [Fourcc::Xrgb8888, Fourcc::Argb8888],
-        render_formats,
-        drm.cursor_size(),
-        Some(gbm),
-    )?;
 
     // Input: libinput opens the seat's keyboards and mice through the
     // session, as the GPU was.
@@ -197,19 +155,33 @@ pub fn init(
         node,
         gpus,
         drm,
-        compositor,
-        output,
-        in_flight: false,
-        again: false,
+        fd,
+        gbm,
+        render_formats,
+        screens: Vec::new(),
     }));
     dmabuf(state, &udev)?;
+    // The monitors connected now; then those plugged in or out, as udev
+    // says the GPU changed.
+    scan(state, &udev);
+    let card = DrmNode::from_path(&path)?.dev_id();
+    let u = udev.clone();
+    event_loop
+        .handle()
+        .insert_source(UdevBackend::new(&seat)?, move |event, _, state| {
+            if let UdevEvent::Changed { device_id } = event
+                && device_id == card
+            {
+                scan(state, &u);
+            }
+        })?;
 
     // Frames: drawn when something changed (queue_redraw), one at a time.
     let (ping, asked) = make_ping()?;
     let u = udev.clone();
     event_loop
         .handle()
-        .insert_source(asked, move |_, _, state| draw_or_wait(state, &u))?;
+        .insert_source(asked, move |_, _, state| draw_all(state, &u))?;
     state.redraw = Some(ping);
     state.queue_redraw();
 
@@ -219,19 +191,24 @@ pub fn init(
     event_loop
         .handle()
         .insert_source(drm_events, move |event, _, state| match event {
-            DrmEvent::VBlank(_) => {
-                let again = {
+            DrmEvent::VBlank(crtc) => {
+                let shown = {
                     let mut udev = u.borrow_mut();
-                    if let Err(e) = udev.compositor.frame_submitted() {
-                        tracing::warn!("a frame shown: {e}");
-                    }
-                    udev.in_flight = false;
-                    std::mem::take(&mut udev.again)
+                    let screen = udev.screens.iter_mut().find(|s| s.crtc == crtc);
+                    screen.map(|screen| {
+                        if let Err(e) = screen.compositor.frame_submitted() {
+                            tracing::warn!("a frame shown: {e}");
+                        }
+                        screen.in_flight = false;
+                        (screen.output.clone(), std::mem::take(&mut screen.again))
+                    })
                 };
-                let output = u.borrow().output.clone();
-                render::frame_done(state, &output);
-                if again {
-                    draw_or_wait(state, &u);
+                if let Some((output, again)) = shown {
+                    render::frame_done(state, &output);
+                    if again {
+                        draw_or_wait(state, &u, &output);
+                        finish_frame(state, &u);
+                    }
                 }
             }
             DrmEvent::Error(e) => tracing::warn!("DRM: {e}"),
@@ -257,76 +234,184 @@ pub fn init(
                 if udev.libinput.resume().is_err() {
                     tracing::warn!("taking the input devices back");
                 }
-                if let Err(e) = udev.compositor.reset_state() {
-                    tracing::warn!("resetting the monitor: {e}");
+                for screen in &mut udev.screens {
+                    if let Err(e) = screen.compositor.reset_state() {
+                        tracing::warn!("resetting {}: {e}", screen.output.name());
+                    }
+                    screen.in_flight = false;
                 }
-                udev.in_flight = false;
                 drop(udev);
+                // Monitors may have come or gone meanwhile.
+                scan(state, &u);
                 state.queue_redraw();
             }
         })?;
     Ok(())
 }
 
-/// The first connected monitor, its preferred mode (or else its first), and
-/// a CRTC that can drive it.
-fn first_monitor(
+/// The monitors as they are now: one connected and not shown yet is
+/// shown, at the mode it prefers, on a CRTC no other uses; one shown and
+/// no longer connected goes.
+fn scan(state: &mut Wayluck, udev: &Rc<RefCell<Udev>>) {
+    let connected = match connected(&udev.borrow().fd) {
+        Ok(connected) => connected,
+        Err(e) => return tracing::warn!("listing monitors: {e}"),
+    };
+    let gone: Vec<Output> = {
+        let mut u = udev.borrow_mut();
+        let (stay, gone): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut u.screens).into_iter().partition(|s| {
+                connected
+                    .iter()
+                    .any(|(info, _)| info.handle() == s.connector)
+            });
+        u.screens = stay;
+        gone.into_iter().map(|s| s.output).collect()
+    };
+    for output in gone {
+        state.remove_monitor(&output);
+    }
+    for (info, mode) in connected {
+        if udev
+            .borrow()
+            .screens
+            .iter()
+            .any(|s| s.connector == info.handle())
+        {
+            continue;
+        }
+        match show(state, udev, &info, mode) {
+            Ok(()) => {}
+            Err(e) => tracing::warn!("can't show {:?}: {e}", info.interface()),
+        }
+    }
+}
+
+/// The connectors with a monitor on them, and the mode each prefers (or
+/// else its first).
+fn connected(
     fd: &DrmDeviceFd,
-) -> Result<
-    (
-        connector::Info,
-        smithay::reexports::drm::control::Mode,
-        crtc::Handle,
-    ),
-    Box<dyn Error>,
-> {
-    let resources = fd.resource_handles()?;
-    for &handle in resources.connectors() {
+) -> Result<Vec<(connector::Info, smithay::reexports::drm::control::Mode)>, Box<dyn Error>> {
+    let mut connected = Vec::new();
+    for &handle in fd.resource_handles()?.connectors() {
         let info = fd.get_connector(handle, false)?;
         if info.state() != connector::State::Connected {
             continue;
         }
         let modes = info.modes();
-        let Some(&mode) = modes
+        let preferred = modes
             .iter()
-            .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
-            .or(modes.first())
-        else {
-            continue;
-        };
-        for &encoder in info.encoders() {
-            let encoder = fd.get_encoder(encoder)?;
-            if let Some(&crtc) = resources.filter_crtcs(encoder.possible_crtcs()).first() {
-                return Ok((info, mode, crtc));
-            }
+            .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED));
+        if let Some(&mode) = preferred.or(modes.first()) {
+            connected.push((info, mode));
         }
     }
-    Err("no monitor connected".into())
+    Ok(connected)
 }
 
-/// Draw a frame now, or after the one on its way (a vblank from now).
-fn draw_or_wait(state: &mut Wayluck, udev: &Rc<RefCell<Udev>>) {
+/// Show the monitor on a connector: a CRTC no other monitor uses, buffers
+/// the GPU renders into and the monitor can show, and an output for it.
+fn show(
+    state: &mut Wayluck,
+    udev: &Rc<RefCell<Udev>>,
+    info: &connector::Info,
+    mode: smithay::reexports::drm::control::Mode,
+) -> Result<(), Box<dyn Error>> {
     let mut u = udev.borrow_mut();
-    if u.in_flight {
-        u.again = true;
-        return;
+    let used: HashSet<crtc::Handle> = u.screens.iter().map(|s| s.crtc).collect();
+    let resources = u.fd.resource_handles()?;
+    let mut free = None;
+    for &encoder in info.encoders() {
+        let encoder = u.fd.get_encoder(encoder)?;
+        let crtcs = resources.filter_crtcs(encoder.possible_crtcs());
+        if let Some(&crtc) = crtcs.iter().find(|c| !used.contains(c)) {
+            free = Some(crtc);
+            break;
+        }
     }
+    let crtc = free.ok_or("no CRTC left to drive it")?;
+    let name = format!("{}-{}", info.interface().as_str(), info.interface_id());
+    let (w, h) = info.size().unwrap_or((0, 0));
+    let output = Output::new(
+        name,
+        PhysicalProperties {
+            size: (w as i32, h as i32).into(),
+            subpixel: Subpixel::Unknown,
+            make: "unknown".into(),
+            model: "unknown".into(),
+            serial_number: String::new(),
+        },
+    );
+    let surface = u.drm.create_surface(crtc, mode, &[info.handle()])?;
+    let gbm = u.gbm.clone();
+    let compositor = DrmCompositor::new(
+        OutputModeSource::Auto(output.downgrade()),
+        surface,
+        None,
+        GbmAllocator::new(
+            gbm.clone(),
+            GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
+        ),
+        GbmFramebufferExporter::new(gbm.clone(), u.node.into()),
+        [Fourcc::Xrgb8888, Fourcc::Argb8888],
+        u.render_formats.iter().copied(),
+        u.drm.cursor_size(),
+        Some(gbm),
+    )?;
+    u.screens.push(Screen {
+        connector: info.handle(),
+        crtc,
+        output: output.clone(),
+        compositor,
+        in_flight: false,
+        again: false,
+    });
+    drop(u);
+    state.add_monitor(output, Mode::from(mode), Transform::Normal);
+    Ok(())
+}
+
+/// Draw every monitor: now, or after its frame on its way.
+fn draw_all(state: &mut Wayluck, udev: &Rc<RefCell<Udev>>) {
+    let outputs: Vec<Output> = udev
+        .borrow()
+        .screens
+        .iter()
+        .map(|s| s.output.clone())
+        .collect();
+    for output in outputs {
+        draw_or_wait(state, udev, &output);
+    }
+    finish_frame(state, udev);
+}
+
+/// Draw a frame on output now, or after the one on its way (a vblank from
+/// now).
+fn draw_or_wait(state: &mut Wayluck, udev: &Rc<RefCell<Udev>>, output: &Output) {
+    let mut u = udev.borrow_mut();
     let Udev {
         node,
         gpus,
-        compositor,
-        output,
+        screens,
         ..
     } = &mut *u;
+    let Some(screen) = screens.iter_mut().find(|s| &s.output == output) else {
+        return;
+    };
+    if screen.in_flight {
+        screen.again = true;
+        return;
+    }
     let mut renderer = match gpus.single_renderer(node) {
         Ok(r) => r,
         Err(e) => return tracing::warn!("no renderer: {e}"),
     };
     let elements = render::elements(state, output, &mut renderer);
+    let compositor = &mut screen.compositor;
     let rendered =
         compositor.render_frame(&mut renderer, &elements, render::CLEAR, FrameFlags::DEFAULT);
     let changed = matches!(&rendered, Ok(frame) if !frame.is_empty);
-    tracing::debug!("drew a frame: changed {changed}");
+    tracing::debug!("drew a frame on {}: changed {changed}", output.name());
     let shown = match rendered {
         Ok(frame) if frame.is_empty => false,
         Ok(_) => match compositor.queue_frame(()) {
@@ -341,16 +426,24 @@ fn draw_or_wait(state: &mut Wayluck, udev: &Rc<RefCell<Udev>>) {
             false
         }
     };
-    // Screenshots and screen sharing waiting for this frame.
-    screencopy::capture_virtual(state, &mut renderer);
-    image_capture::capture_frames(state, &mut renderer);
-    let output = output.clone();
-    u.in_flight = shown;
+    screen.in_flight = shown;
     drop(u);
     // Nothing new to show: clients waiting to draw needn't wait for a vblank.
     if !shown {
-        render::frame_done(state, &output);
+        render::frame_done(state, output);
     }
+}
+
+/// After drawing: screenshots and screen sharing waiting for a frame.
+fn finish_frame(state: &mut Wayluck, udev: &Rc<RefCell<Udev>>) {
+    let mut u = udev.borrow_mut();
+    let Udev { node, gpus, .. } = &mut *u;
+    let mut renderer = match gpus.single_renderer(node) {
+        Ok(r) => r,
+        Err(e) => return tracing::warn!("no renderer: {e}"),
+    };
+    screencopy::capture_virtual(state, &mut renderer);
+    image_capture::capture_frames(state, &mut renderer);
 }
 
 /// linux-dmabuf v4 on this GPU: GPU clients render into buffers it can use

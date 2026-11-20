@@ -5,6 +5,7 @@ mod capture;
 mod clipboard;
 mod input;
 mod layers;
+mod monitors;
 mod render;
 mod session;
 mod state;

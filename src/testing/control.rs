@@ -19,6 +19,10 @@
 //!   up.
 //! - `animating`: each window on its way to where it's placed, and where
 //!   it's drawn now in its scene, `title@x,y,widthxheight`, "; " between.
+//! - `nudge DX DY`: the pointer by DX, DY, as a mouse moves it (kept on
+//!   the monitors); where it is then, `x,y`.
+//! - `add-monitor NAME WIDTH HEIGHT`: a monitor plugged in.
+//! - `remove-monitor NAME`: one unplugged
 //!
 //! It's at $XDG_RUNTIME_DIR/wayluck-test.<WAYLAND_DISPLAY>. Builds without
 //! the feature have none of this: the harness checks they refuse it.
@@ -32,6 +36,7 @@ use smithay::{
     desktop::Window,
     input::keyboard::Keycode,
     reexports::calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic},
+    utils::{Logical, Point},
     wayland::{seat::WaylandFocus, selection::data_device::current_data_device_selection_userdata},
 };
 use std::{
@@ -212,6 +217,29 @@ fn run(command: &str, state: &mut Wayluck) -> String {
                 "ok".into()
             }
             _ => "error: move X Y".into(),
+        },
+        // As a mouse moves it: by so much, kept on the monitors.
+        ["nudge", dx, dy] => match (dx.parse::<f64>(), dy.parse::<f64>()) {
+            (Ok(dx), Ok(dy)) => {
+                let from = state.seat.get_pointer().unwrap().current_location();
+                let by: Point<f64, Logical> = (dx, dy).into();
+                let to = state.keep_on_monitors(from, from + by);
+                state.move_pointer(to, time);
+                let at = state.seat.get_pointer().unwrap().current_location();
+                format!("{},{}", at.x, at.y)
+            }
+            _ => "error: nudge DX DY".into(),
+        },
+        ["remove-monitor", name] => match super::headless::remove_monitor(state, name) {
+            true => "ok".into(),
+            false => format!("error: no monitor {name}"),
+        },
+        ["add-monitor", name, width, height] => match (width.parse(), height.parse()) {
+            (Ok(width), Ok(height)) => {
+                super::headless::add_monitor(state, name, (width, height));
+                "ok".into()
+            }
+            _ => "error: add-monitor NAME WIDTH HEIGHT".into(),
         },
         ["frames"] => super::headless::FRAMES
             .load(std::sync::atomic::Ordering::Relaxed)

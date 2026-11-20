@@ -56,17 +56,8 @@ pub fn init(
             serial_number: String::new(),
         },
     );
-    let _global = output.create_global::<Wayluck>(&state.display_handle);
     // Flipped180: what winit's GL surface needs to come out the right way up.
-    output.change_current_state(
-        Some(mode),
-        Some(Transform::Flipped180),
-        None,
-        Some((0, 0).into()),
-    );
-    output.set_preferred(mode);
-    // The output's place in the space: windows are drawn where they overlap it.
-    state.space.map_output(&output, (0, 0));
+    state.add_monitor(output.clone(), mode, Transform::Flipped180);
 
     // Redraws only what changed since the last frame (nothing yet but the clear).
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
@@ -104,6 +95,8 @@ pub fn init(
                 // Bars stretch to the new size; windows get what they leave.
                 layer_map_for_output(&output).arrange();
                 state.wm_output_changed(&output);
+                // Virtual outputs stay right of it.
+                state.lay_out();
                 state.queue_redraw();
             }
             WinitEvent::Redraw => {

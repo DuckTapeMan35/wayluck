@@ -10,7 +10,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use wayland_client::{
-    Connection, Dispatch, QueueHandle,
+    Connection, Dispatch, Proxy, QueueHandle,
     globals::{GlobalListContents, registry_queue_init},
     protocol::wl_registry::WlRegistry,
 };
@@ -89,6 +89,18 @@ pub struct Heard {
     pub closed: bool,
 }
 
+/// What it's heard of an output.
+#[derive(Clone, Debug, Default)]
+pub struct HeardOutput {
+    pub name: String,
+    /// Where it is (x, y, width, height).
+    pub geometry: Option<(i32, i32, i32, i32)>,
+    /// It's gone.
+    pub removed: bool,
+    /// Its object's id, to tell outputs apart.
+    object: u32,
+}
+
 /// What it's heard of a layer surface.
 #[derive(Clone, Debug, Default)]
 pub struct HeardLayer {
@@ -114,6 +126,8 @@ struct Log {
     shared: usize,
     /// What its outputs leave windows (x, y, width, height): the last heard.
     usable: Option<(i32, i32, i32, i32)>,
+    /// Outputs, as heard of.
+    outputs: Vec<HeardOutput>,
     /// Layer surfaces, as heard of.
     layers: Vec<HeardLayer>,
     /// The workspaces asked to be shown, by name, in order
@@ -231,6 +245,28 @@ impl Wm {
     /// What its output leaves windows, once it's heard (x, y, width, height).
     pub fn usable(&self) -> Option<(i32, i32, i32, i32)> {
         self.log.lock().unwrap().usable
+    }
+
+    /// The output called name, once it's heard where it is.
+    pub fn output(&self, name: &str) -> HeardOutput {
+        wait_for(
+            || {
+                let log = self.log.lock().unwrap();
+                (log.outputs.iter())
+                    .find(|o| o.name == name && o.geometry.is_some())
+                    .cloned()
+            },
+            &format!("the output {name}"),
+        )
+    }
+
+    /// Make a virtual output, width by height, modelled on nothing. Kept
+    /// as long as the window manager is.
+    pub fn virtual_output(&self, width: i32, height: i32) {
+        let _kept = self
+            .manager
+            .virtual_output(width, height, None, 60_000, &self.qh, ());
+        self.conn.flush().unwrap();
     }
 
     /// The layer surface called namespace, once it's all heard (its first done).
@@ -735,20 +771,37 @@ impl Dispatch<WayluckWmTransactionV1, ()> for Client {
 impl Dispatch<WayluckWmOutputV1, ()> for Client {
     fn event(
         client: &mut Self,
-        _: &WayluckWmOutputV1,
+        proxy: &WayluckWmOutputV1,
         event: wayluck_wm_output_v1::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wayluck_wm_output_v1::Event::Usable {
-            x,
-            y,
-            width,
-            height,
-        } = event
-        {
-            client.log.lock().unwrap().usable = Some((x, y, width, height));
+        let mut log = client.log.lock().unwrap();
+        let object = proxy.id().protocol_id();
+        if !log.outputs.iter().any(|o| o.object == object) {
+            log.outputs.push(HeardOutput {
+                object,
+                ..HeardOutput::default()
+            });
+        }
+        let heard = log.outputs.iter_mut().find(|o| o.object == object).unwrap();
+        match event {
+            wayluck_wm_output_v1::Event::Name { name } => heard.name = name,
+            wayluck_wm_output_v1::Event::Removed => heard.removed = true,
+            wayluck_wm_output_v1::Event::Geometry {
+                x,
+                y,
+                width,
+                height,
+            } => heard.geometry = Some((x, y, width, height)),
+            wayluck_wm_output_v1::Event::Usable {
+                x,
+                y,
+                width,
+                height,
+            } => log.usable = Some((x, y, width, height)),
+            _ => {}
         }
     }
 }

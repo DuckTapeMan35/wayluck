@@ -71,6 +71,14 @@ impl Wayluck {
         }
     }
 
+    /// A monitor went: the window manager's object for it hears so (and it destroys it).
+    pub fn wm_output_removed(&mut self, output: &Output) {
+        for (_, resource) in self.wm.outputs.iter().filter(|(o, _)| o == output) {
+            resource.removed();
+        }
+        self.wm.outputs.retain(|(o, _)| o != output);
+    }
+
     /// Something started capturing output, or everything stopped: the
     /// window manager hears.
     pub fn wm_capture(&self, output: &Output, started: bool) {
