@@ -5,6 +5,10 @@
 mod harness;
 use harness::{PATIENCE, Session, wait_for, wayland, wm, wm::Wm, x::XWindow};
 use std::{
+    os::{
+        linux::net::SocketAddrExt,
+        unix::net::{SocketAddr, UnixStream},
+    },
     thread::sleep,
     time::{Duration, Instant},
 };
@@ -674,4 +678,33 @@ fn an_x_window_too_slow_to_answer_still_gets_the_size_its_placed_at() {
         || (session.window("xwin") == wm::PLACE).then_some(()),
         "it placed",
     );
+}
+
+#[test]
+fn xwayland_stops_once_no_x_program_is_left_and_starts_again() {
+    let mut session = Session::start();
+    let wm = Wm::start(&session);
+    assert_eq!(session.command("x-idle 300"), "ok");
+    let x = XWindow::open(&session.x_display, "xwin", "XApp", (200, 200));
+    wm.window("xwin");
+    // While one is connected, it keeps running.
+    sleep(Duration::from_millis(600));
+    let running = session.command("xwayland");
+    let display = running.strip_prefix("running :").expect("Xwayland running");
+    drop(x);
+    wait_for(
+        || (session.command("xwayland") == "not started").then_some(()),
+        "Xwayland to stop",
+    );
+    // And it's gone: nothing answers on its display.
+    let name = format!("/tmp/.X11-unix/X{display}");
+    let at = SocketAddr::from_abstract_name(name.as_bytes()).unwrap();
+    wait_for(
+        || UnixStream::connect_addr(&at).is_err().then_some(()),
+        "Xwayland's display to go",
+    );
+    // The next to come starts it again, and is let in.
+    let _again = XWindow::open(&session.x_display, "xagain", "XApp", (200, 200));
+    wm.window("xagain");
+    assert!(session.command("xwayland").starts_with("running"));
 }

@@ -19,12 +19,14 @@ use rustix::net::{
 };
 use smithay::reexports::{
     calloop::{
-        Interest, LoopHandle, Mode, PostAction,
+        Interest, LoopHandle, Mode, PostAction, RegistrationToken,
         channel::{self, Event, Sender},
         generic::Generic,
+        timer::{TimeoutAction, Timer},
     },
     x11rb::{
-        protocol::xproto::ConnectionExt as _,
+        connection::Connection as _,
+        protocol::xproto::{AtomEnum, ConnectionExt as _},
         rust_connection::{DefaultStream, RustConnection},
     },
 };
@@ -39,6 +41,7 @@ use std::{
         unix::net::{SocketAddr, UnixListener, UnixStream},
     },
     thread,
+    time::Duration,
 };
 
 /// How many X displays there are to choose from.
@@ -50,6 +53,9 @@ const MOST_FDS: usize = 16;
 /// The kind of cookie Xwayland asks for.
 const COOKIE_NAME: &[u8] = b"MIT-MAGIC-COOKIE-1";
 
+/// How long Xwayland runs with no X program connected, by default.
+const IDLE: Duration = Duration::from_secs(10);
+
 /// What lets the door in.
 #[derive(Clone, Copy)]
 struct Key {
@@ -58,11 +64,12 @@ struct Key {
 
 /// What comes back to wayluck from the door's threads.
 enum Said {
-    /// What the door knows of Xwayland, looked up (None: it couldn't be;
-    /// programs pass through unread).
+    /// What the door knows of Xwayland, looked up (None: it couldn't be; programs pass through unread).
     Ready(Option<Known>),
     /// What a program's requests told.
     Heard(Heard),
+    /// A program passed through has gone.
+    Left,
 }
 
 /// The display, and who's waiting at it.
@@ -77,6 +84,10 @@ pub struct Door {
     known: Option<Known>,
     /// Xwayland is starting (or ready): it's started once.
     started: bool,
+    /// Programs passed through and still connected.
+    programs: usize,
+    idle_after: Duration,
+    idle: Option<RegistrationToken>,
     /// Back to wayluck.
     said: Sender<Said>,
     /// None: Xwayland lets anyone in (no file for its cookie could be
@@ -133,6 +144,7 @@ impl Wayluck {
             Event::Msg(Said::Heard(Heard::Strut(window, strut))) => {
                 state.x_strut_changed(window, strut)
             }
+            Event::Msg(Said::Left) => state.x_program_left(),
             Event::Closed => {}
         });
         if let Err(e) = inserted {
@@ -153,6 +165,9 @@ impl Wayluck {
             said,
             key,
             authority,
+            programs: 0,
+            idle_after: IDLE,
+            idle: None,
             _lock: lock,
         });
     }
@@ -169,8 +184,14 @@ impl Wayluck {
         let Some(door) = &mut self.x_door else {
             return;
         };
+        if let Some(idle) = door.idle.take() {
+            self.loop_handle.remove(idle);
+        }
         if let (true, Some(xwayland)) = (door.open, door.xwayland) {
-            return pass_through(stream, xwayland, door.known, door.key, &door.said);
+            if pass_through(stream, xwayland, door.known, door.key, &door.said) {
+                door.programs += 1;
+            }
+            return;
         }
         door.waiting.push(stream);
         if !door.started {
@@ -232,9 +253,91 @@ impl Wayluck {
         door.open = true;
         door.known = known;
         for stream in door.waiting.drain(..) {
-            pass_through(stream, xwayland, known, door.key, &door.said);
+            if pass_through(stream, xwayland, known, door.key, &door.said) {
+                door.programs += 1;
+            }
+        }
+        self.x_maybe_idle();
+    }
+
+    fn x_program_left(&mut self) {
+        if let Some(door) = &mut self.x_door {
+            door.programs = door.programs.saturating_sub(1);
+        }
+        self.x_maybe_idle();
+    }
+
+    fn x_maybe_idle(&mut self) {
+        let Some(door) = &mut self.x_door else {
+            return;
+        };
+        if !door.open || door.programs > 0 || !door.waiting.is_empty() || door.idle.is_some() {
+            return;
+        }
+        let timer = Timer::from_duration(door.idle_after);
+        let stop = self.loop_handle.insert_source(timer, |_, _, state| {
+            state.x_stop();
+            TimeoutAction::Drop
+        });
+        match stop {
+            Ok(token) => door.idle = Some(token),
+            Err(e) => tracing::warn!("Xwayland won't stop when it's idle: {e}"),
         }
     }
+
+    fn x_stop(&mut self) {
+        let Some(door) = &mut self.x_door else {
+            return;
+        };
+        door.idle = None;
+        if door.programs > 0 || !door.waiting.is_empty() {
+            return;
+        }
+        tracing::info!("no X program for {:?}: stopping Xwayland", door.idle_after);
+        // Dropping smithay's Xwayland only marks its Wayland connection
+        // closed, for when clients are next dispatched: X itself is asked
+        // to let wayluck's window manager go, and Xwayland (started to quit
+        // when none is left) quits.
+        if let Some(way) = door.way() {
+            let asked = thread::Builder::new()
+                .name("X stop".into())
+                .spawn(move || let_wm_go(way));
+            if let Err(e) = asked {
+                tracing::warn!("Xwayland won't stop: {e}");
+            }
+        }
+        door.started = false;
+        door.open = false;
+        door.xwayland = None;
+        door.known = None;
+        let made =
+            Key::make().inspect_err(|e| tracing::warn!("X programs can go round the door: {e}"));
+        (door.key, door.authority) = made.ok().unzip();
+        self.x_hints = None;
+        if let Some(xwayland) = self.xwayland.take() {
+            self.loop_handle.remove(xwayland);
+        }
+    }
+
+    #[cfg(feature = "test-harness")]
+    pub fn x_idle_after(&mut self, idle: Duration) {
+        if let Some(door) = &mut self.x_door {
+            door.idle_after = idle;
+        }
+    }
+}
+
+/// X disconnects the client whose window says it's the window manager.
+fn let_wm_go(way: Way) -> Option<()> {
+    let conn = way.connect()?;
+    let root = conn.setup().roots.first()?.root;
+    let check = conn.intern_atom(false, b"_NET_SUPPORTING_WM_CHECK").ok()?;
+    let check = check.reply().ok()?.atom;
+    let wm = conn
+        .get_property(false, root, check, AtomEnum::WINDOW, 0, 1)
+        .ok()?;
+    let wm = wm.reply().ok()?.value32()?.next()?;
+    conn.kill_client(wm).ok()?.check().ok()
 }
 
 /// Xwayland's numbers for the atoms wayluck reads requests for, and for
@@ -266,13 +369,17 @@ fn pass_through(
     known: Option<Known>,
     key: Option<Key>,
     said: &Sender<Said>,
-) {
+) -> bool {
     let server = match reach(xwayland) {
         Ok(server) => server,
-        Err(e) => return tracing::warn!("can't reach Xwayland at :{xwayland}: {e}"),
+        Err(e) => {
+            tracing::warn!("can't reach Xwayland at :{xwayland}: {e}");
+            return false;
+        }
     };
     let (Ok(program_back), Ok(server_back)) = (program.try_clone(), server.try_clone()) else {
-        return tracing::warn!("can't pass an X program through");
+        tracing::warn!("can't pass an X program through");
+        return false;
     };
     let said = said.clone();
     let spawned = [
@@ -284,18 +391,28 @@ fn pass_through(
                 let Ok(little) = let_in(&mut program, &mut server, key.as_ref()) else {
                     // It went before it said who it is: so does this.
                     let _ = server.shutdown(Shutdown::Both);
+                    let _ = said.send(Said::Left);
                     return;
                 };
-                let reader = known.map(|known| (Requests::new(known, little), said));
-                carry(program, server, reader)
+                let reader = known.map(|known| (Requests::new(known, little), said.clone()));
+                carry(program, server, reader);
+                let _ = said.send(Said::Left);
             }),
         thread::Builder::new()
             .name("Xwayland to X program".into())
             .spawn(move || carry(server_back, program_back, None)),
     ];
-    for spawned in spawned {
-        if let Err(e) = spawned {
+    let [to, back] = spawned;
+    match (to, back) {
+        (Ok(_), Ok(_)) => true,
+        // Without the way there, it's never heard leaving.
+        (Err(e), _) => {
             tracing::warn!("can't pass an X program through: {e}");
+            false
+        }
+        (_, Err(e)) => {
+            tracing::warn!("can't pass an X program through: {e}");
+            true
         }
     }
 }

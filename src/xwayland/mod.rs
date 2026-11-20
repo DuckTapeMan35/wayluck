@@ -153,6 +153,12 @@ impl XwmHandler for Wayluck {
             .expect("X window manager events before it started")
     }
 
+    fn disconnected(&mut self, xwm: XwmId) {
+        if self.xwm.as_ref().is_some_and(|wm| wm.id() == xwm) {
+            self.xwm = None;
+        }
+    }
+
     fn new_window(&mut self, _xwm: XwmId, window: X11Surface) {
         tracing::debug!("X: new window {}", window.window_id());
     }

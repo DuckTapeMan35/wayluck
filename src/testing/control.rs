@@ -1,32 +1,3 @@
-//! For tests only
-//! drives wayluck through, as a person at the keyboard would. One command a
-//! line; each is answered "ok" (or a value) once done, so the test can wait.
-//!
-//! - `env`: the session's WAYLAND_DISPLAY and DISPLAY (empty until Xwayland
-//!   is ready), on one line.
-//! - `move X Y`: the pointer to X, Y (logical, on the outputs' layout).
-//! - `button CODE down|up`: an evdev button (0x110 the left one, as 272).
-//! - `key CODE down|up`: an evdev key code (KEY_A is 30).
-//! - `windows`: each window on screen, `title@x,y,widthxheight`, "; "
-//!   between.
-//! - `x-menus`: each X menu or tooltip, `title@x,y,widthxheight shown` (or
-//!   `hidden`), "; " between.
-//! - `clipboard`: `x` if what's on the clipboard is an X program's (copied
-//!   while X had the keyboard), `-` otherwise.
-//! - `picker`: what the picker offers, if it's up, and where its tiles
-//!   are: `monitor NAME@x,y,widthxheight` (or `workspace N@…`, `window
-//!   ID@…`), ` *` after the selected one, "; " between; `-` if it isn't
-//!   up.
-//! - `animating`: each window on its way to where it's placed, and where
-//!   it's drawn now in its scene, `title@x,y,widthxheight`, "; " between.
-//! - `nudge DX DY`: the pointer by DX, DY, as a mouse moves it (kept on
-//!   the monitors); where it is then, `x,y`.
-//! - `add-monitor NAME WIDTH HEIGHT`: a monitor plugged in.
-//! - `remove-monitor NAME`: one unplugged
-//!
-//! It's at $XDG_RUNTIME_DIR/wayluck-test.<WAYLAND_DISPLAY>. Builds without
-//! the feature have none of this: the harness checks they refuse it.
-
 use crate::{Wayluck, capture::picker::overlay::Choice, windows};
 use smithay::{
     backend::{
@@ -164,10 +135,19 @@ fn run(command: &str, state: &mut Wayluck) -> String {
                 .collect();
             docks.join("; ")
         }
+        // Xwayland stops after ms with no X program connected.
+        ["x-idle", ms] => match ms.parse() {
+            Ok(ms) => {
+                state.x_idle_after(std::time::Duration::from_millis(ms));
+                "ok".into()
+            }
+            Err(_) => "error: x-idle MS".into(),
+        },
         // Whether Xwayland has started (it does when an X program connects),
         // and its own display.
         ["xwayland"] => match state.x_door.as_ref().and_then(|d| d.xwayland()) {
             Some(display) if state.xwm.is_some() => format!("running :{display}"),
+            None if state.xwm.is_some() => "stopping".into(),
             _ => "not started".into(),
         },
         ["picker"] => match state.picker_tiles() {

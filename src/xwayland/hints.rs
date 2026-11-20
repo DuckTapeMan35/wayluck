@@ -285,11 +285,14 @@ fn told(
                 tracing::debug!("X programs no longer heard asking their window manager: {e}");
             }
         });
-        for hint in heard {
+        let told = heard.into_iter().try_for_each(|hint| {
             teller.tell(hint)?;
-            conn.flush()?;
-        }
-        Ok(())
+            Ok(conn.flush()?)
+        });
+        // Wayluck stopped hinting (or X went): the connection closes, so
+        // the listener stops too, and Xwayland isn't kept by it.
+        let _ = rustix::net::shutdown(conn.stream(), rustix::net::Shutdown::Both);
+        told
     })
 }
 
