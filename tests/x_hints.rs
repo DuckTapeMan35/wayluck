@@ -7,6 +7,7 @@ use harness::{
     Session,
     layer::{Kind, Layer},
     wait_for,
+    wayland::Window as WaylandWindow,
     wm::Wm,
     x::XWindow,
 };
@@ -272,4 +273,55 @@ fn a_pager_moving_an_x_window_asks_the_window_manager() {
     wm.wait_for(id, "two, then all, asked", |w| {
         w.workspace_requests == asked
     });
+}
+
+#[test]
+fn the_desktop_shown_is_the_one_on_the_monitor_with_the_keyboard() {
+    let mut session = Session::start();
+    let wm = Wm::start(&session);
+    let reader = Reader::connect(&session);
+    assert_eq!(session.command("add-monitor HEADLESS-2 800 600"), "ok");
+    // One shown on each monitor.
+    wm.add_workspace("left");
+    wm.add_workspace("right");
+    wm.workspace_on("left", "HEADLESS-1", true);
+    wm.workspace_on("right", "HEADLESS-2", true);
+    let root = reader.root;
+    reader.wait_for(root, "_NET_NUMBER_OF_DESKTOPS", &[2]);
+    // A window on each.
+    let _left = WaylandWindow::titled(&session, 0xffff0000, "on the left");
+    let left = wm.window("on the left").id;
+    wm.window_workspace(left, Some("left"));
+    let _right = WaylandWindow::titled(&session, 0xff00ff00, "on the right");
+    let right = wm.window("on the right").id;
+    wm.window_workspace(right, Some("right"));
+    // The one with the keyboard is on the right: X sees that one shown;
+    // then on the left, and that one is.
+    wm.focus(right);
+    reader.wait_for(root, "_NET_CURRENT_DESKTOP", &[1]);
+    wm.focus(left);
+    reader.wait_for(root, "_NET_CURRENT_DESKTOP", &[0]);
+    wm.focus(right);
+    reader.wait_for(root, "_NET_CURRENT_DESKTOP", &[1]);
+}
+
+#[test]
+fn with_no_window_focused_the_desktop_shown_is_the_one_under_the_pointer() {
+    let mut session = Session::start();
+    let wm = Wm::start(&session);
+    let reader = Reader::connect(&session);
+    assert_eq!(session.command("add-monitor HEADLESS-2 800 600"), "ok");
+    wm.add_workspace("left");
+    wm.add_workspace("right");
+    wm.workspace_on("left", "HEADLESS-1", true);
+    wm.workspace_on("right", "HEADLESS-2", true);
+    let root = reader.root;
+    reader.wait_for(root, "_NET_NUMBER_OF_DESKTOPS", &[2]);
+    session.command("move 100 100");
+    reader.wait_for(root, "_NET_CURRENT_DESKTOP", &[0]);
+    // Onto the second monitor (right of the first, 1280 wide), and back.
+    session.command("move 1400 100");
+    reader.wait_for(root, "_NET_CURRENT_DESKTOP", &[1]);
+    session.command("move 100 100");
+    reader.wait_for(root, "_NET_CURRENT_DESKTOP", &[0]);
 }

@@ -60,6 +60,7 @@ impl Wayluck {
             self.surface_under(location)
         };
         let pointer = self.seat.get_pointer().unwrap();
+        let from = pointer.current_location();
         pointer.motion(
             self,
             under,
@@ -70,6 +71,9 @@ impl Wayluck {
             },
         );
         pointer.frame(self);
+        if self.monitor_at(from) != self.monitor_at(location) {
+            self.x_workspaces_changed();
+        }
     }
 
     /// What's under the pointer changed, though it didn't move: whatever

@@ -10,8 +10,12 @@
 //! window manager.
 
 use super::door::Way;
-use crate::{Wayluck, windows::WindowId};
+use crate::{
+    Wayluck,
+    windows::{WindowId, Windows},
+};
 use smithay::{
+    output::Output,
     reexports::{
         calloop::channel::{self, Event},
         x11rb::{
@@ -156,15 +160,17 @@ impl Wayluck {
         self.x_hint(Hint::FrameExtents(x11.window_id(), [width; 4]));
     }
 
-    /// The window manager's workspaces changed, or which windows are on
-    /// which. The one shown is the first active one.
     pub fn x_workspaces_changed(&self) {
         if self.x_hints.is_none() {
             return;
         }
         let workspaces: Vec<_> = self.workspaces.iter().collect();
         let names = workspaces.iter().map(|w| w.name.clone()).collect();
-        let current = workspaces.iter().position(|w| w.state.active);
+        let here = self.focused_monitor();
+        let active = || workspaces.iter().filter(|w| w.state.active);
+        let current = (active().find(|w| here.is_some() && w.output == here))
+            .or(active().next())
+            .and_then(|w| workspaces.iter().position(|o| o.id == w.id));
         let viewports = (workspaces.iter())
             .map(|w| {
                 let output = w.output.as_ref();
@@ -188,6 +194,21 @@ impl Wayluck {
             viewports,
             windows,
         }));
+    }
+
+    fn focused_monitor(&self) -> Option<Output> {
+        let keyboard = self.seat.get_keyboard()?.current_focus();
+        let window = keyboard.and_then(|f| Windows::id_of(f.surface()));
+        let on = window.and_then(|id| self.windows.workspaces().find(|(w, _)| *w == id));
+        let workspace = on.and_then(|(_, workspace)| workspace);
+        let output = workspace.and_then(|id| self.workspaces.iter().find(|w| w.id == id));
+        match output.and_then(|w| w.output.clone()) {
+            Some(output) => Some(output),
+            None => {
+                let pointer = self.seat.get_pointer()?.current_location();
+                self.monitor_at(pointer).cloned()
+            }
+        }
     }
 
     /// An X program asked something of its window manager: it hears so,

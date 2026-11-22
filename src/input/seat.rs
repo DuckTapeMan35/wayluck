@@ -38,6 +38,8 @@ impl SeatHandler for Wayluck {
         let client = focused.and_then(|f| dh.get_client(f.surface().id()).ok());
         set_data_device_focus(dh, seat, client.clone());
         set_primary_focus(dh, seat, client);
+        self.loop_handle
+            .insert_idle(|state| state.x_workspaces_changed());
     }
 }
 

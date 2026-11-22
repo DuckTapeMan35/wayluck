@@ -97,6 +97,8 @@ pub struct HeardOutput {
     pub geometry: Option<(i32, i32, i32, i32)>,
     /// It's gone.
     pub removed: bool,
+    /// Its object, to put workspaces on it.
+    proxy: Option<WayluckWmOutputV1>,
     /// Its object's id, to tell outputs apart.
     object: u32,
 }
@@ -525,6 +527,21 @@ impl Wm {
         }
     }
 
+    pub fn workspace_on(&self, name: &str, output: &str, active: bool) {
+        let output = self.output(output).proxy.unwrap();
+        let workspaces = self.workspaces.lock().unwrap();
+        let found = workspaces.iter().find(|(n, _)| n == name);
+        let workspace = found.unwrap().1.clone();
+        self.send(move |tx| {
+            tx.workspace_output(&workspace, Some(&output));
+            let state = match active {
+                true => wayluck_wm_workspace_v1::State::Active,
+                false => wayluck_wm_workspace_v1::State::empty(),
+            };
+            tx.workspace_state(&workspace, state);
+        });
+    }
+
     /// Destroy the workspace called name.
     pub fn remove_workspace(&self, name: &str) {
         let mut workspaces = self.workspaces.lock().unwrap();
@@ -782,6 +799,7 @@ impl Dispatch<WayluckWmOutputV1, ()> for Client {
         if !log.outputs.iter().any(|o| o.object == object) {
             log.outputs.push(HeardOutput {
                 object,
+                proxy: Some(proxy.clone()),
                 ..HeardOutput::default()
             });
         }
