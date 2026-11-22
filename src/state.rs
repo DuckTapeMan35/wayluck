@@ -5,7 +5,7 @@ use crate::{
     capture::picker::Picking,
     capture::screencopy,
     layers::look::Look,
-    monitors::Monitor,
+    monitors::{Monitor, management::OutputManagement},
     render::cursor::Cursor,
     windows::{Pending, Taskbars, ToplevelList, Windows},
     wm::{
@@ -61,6 +61,12 @@ pub type ChangeVt = Box<dyn Fn(i32)>;
 
 /// Whether the renderer can use a client's dmabuf (importing it).
 pub type ImportDmabuf = Box<dyn Fn(&Dmabuf) -> bool>;
+
+/// Shows a monitor at another of its modes: whether it could.
+pub type SetMode = Box<dyn Fn(&Output, smithay::output::Mode) -> bool>;
+
+/// Stops showing anything on a monitor (disabled).
+pub type BlankMonitor = Box<dyn Fn(&Output)>;
 
 pub struct Wayluck {
     /// What WAYLAND_DISPLAY should be for clients, e.g.: wayland-1
@@ -118,6 +124,8 @@ pub struct Wayluck {
     pub own_scene: SceneId,
     /// Outputs with a screen behind them, left to right.
     pub monitors: Vec<Monitor>,
+    /// Tools that arrange the monitors, and what they were told.
+    pub output_management: OutputManagement,
     /// Outputs with no screen behind them.
     pub virtuals: Vec<VirtualOutput>,
     /// Virtual outputs made so far: the next is named after it.
@@ -165,6 +173,9 @@ pub struct Wayluck {
     /// The backend's renderer, asked whether it can use a client's dmabuf
     /// None until the backend is set up.
     pub import_dmabuf: Option<ImportDmabuf>,
+    /// The backend's way to change a monitor's mode; None: it can't.
+    pub set_mode: Option<SetMode>,
+    pub blank_monitor: Option<BlankMonitor>,
     pub seat_state: SeatState<Wayluck>,
     pub seat: Seat<Wayluck>,
 }
@@ -218,6 +229,8 @@ impl Wayluck {
         Self::image_capture_globals(&dh);
         // Clients asking for what's behind their windows blurred.
         Self::background_effect_global(&dh);
+        // Tools arranging the monitors.
+        Self::output_management_global(&dh);
         let activation_state = Self::activation_global(&dh);
         // Asking the user what to share.
         Self::listen_for_picks(&event_loop.handle(), &socket_name);
@@ -274,6 +287,8 @@ impl Wayluck {
             dmabuf_state: DmabufState::new(),
             syncobj_state: None,
             import_dmabuf: None,
+            set_mode: None,
+            blank_monitor: None,
             seat_state,
             seat,
             windows: Windows::default(),
@@ -281,6 +296,7 @@ impl Wayluck {
             workspaces: Default::default(),
             own_scene,
             monitors: Vec::new(),
+            output_management: Default::default(),
             virtuals: Vec::new(),
             virtual_count: 0,
             start_time: std::time::Instant::now(),

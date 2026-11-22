@@ -83,6 +83,8 @@ struct Screen {
     in_flight: bool,
     /// Something changed while one was: draw again at the vblank.
     again: bool,
+    /// The modes the monitor can show.
+    modes: Vec<smithay::reexports::drm::control::Mode>,
 }
 
 pub fn init(
@@ -161,6 +163,38 @@ pub fn init(
         screens: Vec::new(),
     }));
     dmabuf(state, &udev)?;
+
+    let u = udev.clone();
+    state.blank_monitor = Some(Box::new(move |output| {
+        let mut udev = u.borrow_mut();
+        let Some(screen) = udev.screens.iter_mut().find(|s| s.output == *output) else {
+            return;
+        };
+        if let Err(e) = screen.compositor.clear() {
+            tracing::warn!("{}: blanking: {e}", output.name());
+        }
+        screen.in_flight = false;
+        screen.again = false;
+    }));
+
+    // Another mode for a monitor: shown from its next frame.
+    let u = udev.clone();
+    state.set_mode = Some(Box::new(move |output, mode| {
+        let mut udev = u.borrow_mut();
+        let Some(screen) = udev.screens.iter_mut().find(|s| s.output == *output) else {
+            return false;
+        };
+        let Some(&drm) = screen.modes.iter().find(|&&m| Mode::from(m) == mode) else {
+            return false;
+        };
+        match screen.compositor.use_mode(drm) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!("{}: another mode: {e}", output.name());
+                false
+            }
+        }
+    }));
     // The monitors connected now; then those plugged in or out, as udev
     // says the GPU changed.
     scan(state, &udev);
@@ -358,6 +392,9 @@ fn show(
         u.drm.cursor_size(),
         Some(gbm),
     )?;
+    for &mode in info.modes() {
+        output.add_mode(Mode::from(mode));
+    }
     u.screens.push(Screen {
         connector: info.handle(),
         crtc,
@@ -365,6 +402,7 @@ fn show(
         compositor,
         in_flight: false,
         again: false,
+        modes: info.modes().to_vec(),
     });
     drop(u);
     state.add_monitor(output, Mode::from(mode), Transform::Normal);
@@ -385,8 +423,7 @@ fn draw_all(state: &mut Wayluck, udev: &Rc<RefCell<Udev>>) {
     finish_frame(state, udev);
 }
 
-/// Draw a frame on output now, or after the one on its way (a vblank from
-/// now).
+/// Draw a frame on output now, or after the one on its way.
 fn draw_or_wait(state: &mut Wayluck, udev: &Rc<RefCell<Udev>>, output: &Output) {
     let mut u = udev.borrow_mut();
     let Udev {
@@ -398,6 +435,10 @@ fn draw_or_wait(state: &mut Wayluck, udev: &Rc<RefCell<Udev>>, output: &Output) 
     let Some(screen) = screens.iter_mut().find(|s| &s.output == output) else {
         return;
     };
+    // Disabled
+    if !state.monitors().any(|o| o == output) {
+        return;
+    }
     if screen.in_flight {
         screen.again = true;
         return;

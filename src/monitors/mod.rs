@@ -3,19 +3,28 @@
 //! of them all, where the pointer never goes. Backends hand wayluck the
 //! monitors they find and say when one goes; clients and the window manager hear of each.
 
+pub mod management;
+
 use crate::{Wayluck, capture::image_capture};
 use smithay::{
     backend::input::InputTime,
     desktop::layer_map_for_output,
     output::{Mode, Output},
     reexports::wayland_server::backend::GlobalId,
-    utils::{Logical, Point, Transform},
+    utils::{Logical, Point, Size, Transform},
 };
 
 /// A monitor, and the wl_output global clients bind it by.
 pub struct Monitor {
     pub output: Output,
-    global: GlobalId,
+    global: Option<GlobalId>,
+    pub placed: Option<Point<i32, Logical>>,
+}
+
+impl Monitor {
+    pub fn enabled(&self) -> bool {
+        self.global.is_some()
+    }
 }
 
 impl Wayluck {
@@ -34,11 +43,16 @@ impl Wayluck {
         );
         self.monitors.push(Monitor {
             output: output.clone(),
-            global,
+            placed: None,
+            global: Some(global),
         });
+        self.monitor_shown(&output);
+    }
+
+    fn monitor_shown(&mut self, output: &Output) {
         self.lay_out();
-        self.wm_output_added(&output);
-        self.usable_changed(&output);
+        self.wm_output_added(output);
+        self.usable_changed(output);
         self.workspace_list_changed();
         self.queue_redraw();
     }
@@ -48,7 +62,18 @@ impl Wayluck {
             return;
         };
         let gone = self.monitors.remove(at);
-        self.display_handle.remove_global::<Wayluck>(gone.global);
+        match gone.global {
+            Some(global) => {
+                self.display_handle.remove_global::<Wayluck>(global);
+                self.monitor_hidden(output);
+            }
+            // Disabled, it was shown nowhere already.
+            None => self.output_heads_changed(),
+        }
+        tracing::info!("{}: gone", output.name());
+    }
+
+    pub fn monitor_hidden(&mut self, output: &Output) {
         let layers: Vec<_> = layer_map_for_output(output).layers().cloned().collect();
         for layer in layers {
             layer_map_for_output(output).unmap_layer(&layer);
@@ -77,22 +102,60 @@ impl Wayluck {
         tracing::info!("{}: gone", output.name());
     }
 
-    /// Every output where it goes: monitors side by side, then virtual
-    /// outputs. One that moved is told so, and so is the window manager.
+    /// A monitor shown, or not (disabled), as a tool asks. Disabled, it's
+    /// as if it went, but for output management, which still has it.
+    pub fn enable_monitor(&mut self, output: &Output, enabled: bool) {
+        let Some(monitor) = self.monitors.iter_mut().find(|m| m.output == *output) else {
+            return;
+        };
+        match (monitor.global.take(), enabled) {
+            (None, true) => {
+                monitor.global = Some(output.create_global::<Wayluck>(&self.display_handle));
+                tracing::info!("{}: enabled", output.name());
+                self.monitor_shown(output);
+            }
+            (Some(global), false) => {
+                self.display_handle.remove_global::<Wayluck>(global);
+                if let Some(blank) = &self.blank_monitor {
+                    blank(output);
+                }
+                tracing::info!("{}: disabled", output.name());
+                self.monitor_hidden(output);
+            }
+            (global, _) => monitor.global = global,
+        }
+    }
+
+    /// Every output where it goes: monitors put somewhere there, the others
+    /// side by side right of them, then virtual outputs.
     pub fn lay_out(&mut self) {
-        let monitors = self.monitors.iter().map(|m| m.output.clone());
-        let virtuals = self.virtuals.iter().map(|v| v.output.clone());
-        let outputs: Vec<Output> = monitors.chain(virtuals).collect();
-        let mut x = 0;
-        for output in outputs {
-            let at: Point<i32, Logical> = (x, 0).into();
+        let width = |o: &Output| size(o).w;
+        let shown = || self.monitors.iter().filter(|m| m.enabled());
+        let mut x = shown()
+            .filter_map(|m| Some(m.placed?.x + width(&m.output)))
+            .max()
+            .unwrap_or(0);
+        let mut places = Vec::new();
+        for monitor in shown() {
+            let at = monitor.placed.unwrap_or_else(|| {
+                let at = (x, 0).into();
+                x += width(&monitor.output);
+                at
+            });
+            places.push((monitor.output.clone(), at));
+        }
+        for v in &self.virtuals {
+            places.push((v.output.clone(), (x, 0).into()));
+            x += width(&v.output);
+        }
+        for (output, at) in places {
             if self.space.output_geometry(&output).map(|g| g.loc) != Some(at) {
                 output.change_current_state(None, None, None, Some(at));
                 self.space.map_output(&output, at);
                 self.wm_output_changed(&output);
             }
-            x += self.space.output_geometry(&output).map_or(0, |g| g.size.w);
         }
+        self.output_heads_changed();
     }
 
     /// The monitor at location, if one is there.
@@ -123,4 +186,12 @@ impl Wayluck {
         )
             .into()
     }
+}
+
+/// An output's size, where it's mapped (as smithay's space has it).
+pub fn size(output: &Output) -> Size<i32, Logical> {
+    let mode = output.current_mode().map_or_else(Size::default, |m| m.size);
+    let scale = output.current_scale().fractional_scale();
+    let turned = output.current_transform().transform_size(mode);
+    turned.to_f64().to_logical(scale).to_i32_ceil()
 }

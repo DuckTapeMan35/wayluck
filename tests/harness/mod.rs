@@ -5,6 +5,7 @@
 
 pub mod capture;
 pub mod layer;
+pub mod output_manager;
 pub mod taskbar;
 pub mod wayland;
 pub mod wm;

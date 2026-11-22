@@ -116,9 +116,9 @@ impl Wayluck {
         }
     }
 
-    /// The outputs with a screen behind them, left to right.
     pub fn monitors(&self) -> impl Iterator<Item = &Output> {
-        self.monitors.iter().map(|m| &m.output)
+        let shown = self.monitors.iter().filter(|m| m.enabled());
+        shown.map(|m| &m.output)
     }
 
     /// output started being captured: if it's virtual, its windows get frame

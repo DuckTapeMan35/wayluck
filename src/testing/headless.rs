@@ -27,8 +27,11 @@ use std::{
 const SIZE: (i32, i32) = (1280, 800);
 const REFRESH: i32 = 60_000;
 
-/// Each monitor drawn: into its buffer, with what it last showed.
-type Drawn = Vec<(Output, GlesRenderbuffer, OutputDamageTracker)>;
+/// Modes every monitor can show too, besides its own.
+const MODES: [(i32, i32); 2] = [(1920, 1080), (1024, 768)];
+
+/// Each monitor drawn: into its buffer (of its size), with what it last showed.
+type Drawn = Vec<(Output, (i32, i32), GlesRenderbuffer, OutputDamageTracker)>;
 
 /// Frames drawn so far.
 pub static FRAMES: AtomicU64 = AtomicU64::new(0);
@@ -52,6 +55,9 @@ pub fn init(
 
     add_monitor(state, "HEADLESS-1", SIZE);
 
+    // Any of a monitor's modes: its buffer is made again, at that size.
+    state.set_mode = Some(Box::new(|output, mode| output.modes().contains(&mode)));
+
     // Frames are drawn when something changed (Wayluck::queue_redraw): on
     // every monitor, each into a buffer of its own, made the first time.
     let mut drawn: Drawn = Vec::new();
@@ -61,14 +67,16 @@ pub fn init(
         .insert_source(asked, move |_, _, state| {
             FRAMES.fetch_add(1, Ordering::Relaxed);
             let monitors: Vec<Output> = state.monitors().cloned().collect();
-            drawn.retain(|(output, ..)| monitors.contains(output));
+            let size = |o: &Output| o.current_mode().map_or(SIZE, |m| (m.size.w, m.size.h));
+            // One that changed mode gets a buffer of its new size.
+            drawn.retain(|(output, at, ..)| monitors.contains(output) && *at == size(output));
             for output in monitors {
                 if !drawn.iter().any(|(o, ..)| *o == output) {
-                    let size = output.current_mode().map_or(SIZE, |m| (m.size.w, m.size.h));
+                    let size = size(&output);
                     match renderer.create_buffer(Fourcc::Xrgb8888, size.into()) {
                         Ok(buffer) => {
                             let damage = OutputDamageTracker::from_output(&output);
-                            drawn.push((output.clone(), buffer, damage));
+                            drawn.push((output.clone(), size, buffer, damage));
                         }
                         Err(e) => {
                             tracing::warn!("a buffer for {}: {e}", output.name());
@@ -76,7 +84,7 @@ pub fn init(
                         }
                     }
                 }
-                let (_, buffer, damage) = drawn.iter_mut().find(|(o, ..)| *o == output).unwrap();
+                let (_, _, buffer, damage) = drawn.iter_mut().find(|(o, ..)| *o == output).unwrap();
                 let rendered = match renderer.bind(buffer) {
                     Ok(mut framebuffer) => render::render_output(
                         state,
@@ -110,7 +118,10 @@ pub fn init(
 
 /// The monitor called name unplugged.
 pub fn remove_monitor(state: &mut Wayluck, name: &str) -> bool {
-    let output = state.monitors().find(|o| o.name() == name).cloned();
+    let output = (state.monitors.iter())
+        .map(|m| &m.output)
+        .find(|o| o.name() == name)
+        .cloned();
     if let Some(output) = &output {
         state.remove_monitor(output);
     }
@@ -129,6 +140,12 @@ pub fn add_monitor(state: &mut Wayluck, name: &str, size: (i32, i32)) {
             serial_number: String::new(),
         },
     );
+    for other in MODES {
+        output.add_mode(Mode {
+            size: other.into(),
+            refresh: REFRESH,
+        });
+    }
     let mode = Mode {
         size: size.into(),
         refresh: REFRESH,

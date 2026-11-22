@@ -252,7 +252,7 @@ impl Wm {
         wait_for(
             || {
                 let log = self.log.lock().unwrap();
-                (log.outputs.iter())
+                (log.outputs.iter().rev())
                     .find(|o| o.name == name && o.geometry.is_some())
                     .cloned()
             },
