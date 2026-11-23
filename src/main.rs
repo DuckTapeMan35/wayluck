@@ -3,6 +3,7 @@
 mod backend;
 mod capture;
 mod clipboard;
+mod entities;
 mod input;
 mod layers;
 mod monitors;
@@ -84,15 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })?;
     }
 
-    event_loop.run(None, &mut state, |state| {
-        // What the window manager was told of windows this turn.
-        state.wm_windows_done();
-        // Replies to clients are queued while handling; send them once per
-        // turn of the loop.
-        if let Err(e) = state.display_handle.flush_clients() {
-            tracing::warn!("couldn't flush clients: {e}");
-        }
-    })?;
+    event_loop.run(None, &mut state, |state| state.run_systems())?;
     state.stop();
     Ok(())
 }

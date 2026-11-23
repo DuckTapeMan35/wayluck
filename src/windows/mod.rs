@@ -1,7 +1,3 @@
-//! Client windows, by id. The id is what the window manager will know a
-//! window by; a surface finds its window's id without searching (it's kept
-//! in the surface's own data).
-
 mod activation;
 mod animation;
 mod apply;
@@ -15,6 +11,7 @@ mod xdg_shell;
 use crate::{
     Wayluck,
     capture::image_capture,
+    entities::{Entity, Id},
     render::{
         Border,
         blur::{self, Mode},
@@ -43,28 +40,12 @@ use smithay::{
 };
 use std::{
     collections::{HashMap, HashSet},
-    fmt,
     time::Instant,
 };
 pub use taskbars::Taskbars;
 pub use xdg_shell::handle_commit;
 
-/// A window's id: stays the same for its life, never reused.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct WindowId(u32);
-
-/// What the window manager is told it's called (wayluck_wm_manager_v1.window).
-impl From<WindowId> for u32 {
-    fn from(id: WindowId) -> u32 {
-        id.0
-    }
-}
-
-impl fmt::Display for WindowId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "#{}", self.0)
-    }
-}
+pub type WindowId = Id<Window>;
 
 /// What kind of window one is, whoever its client is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -81,58 +62,39 @@ pub enum Kind {
 #[derive(Default)]
 pub struct Windows {
     by_id: HashMap<WindowId, Window>,
-    /// The borders the window manager gave windows.
     borders: HashMap<WindowId, Border>,
-    /// The shadows it gave them.
     shadows: HashMap<WindowId, Shadow>,
-    /// Where it said to blur behind them (Client, if it didn't).
+    /// Mode::Client where the window manager set none.
     blurs: HashMap<WindowId, Mode>,
-    /// How strongly, for all of them.
     pub blur: blur::Strength,
-    /// Wayland windows that asked to be brought forward with no right to:
-    /// they want attention, until they're focused.
+    /// Asked to be activated without the right to: until focused.
     pub asked_attention: HashSet<WindowId>,
-    /// What's kept of each one's blur, from frame to frame.
     behind: HashMap<WindowId, blur::Behind>,
-    /// Windows the window manager has placed or hidden at least once: their
-    /// first configure can carry what it decided.
+    /// Placed or hidden at least once: the first configure can carry it.
     decided: HashSet<WindowId>,
-    /// Windows that committed for the first time and wait for that.
+    /// Committed for the first time, not configured yet.
     waiting: HashSet<WindowId>,
-    /// The window the window manager focused last.
     pub focused: Option<WindowId>,
-    /// Windows the window manager made fullscreen.
     fullscreen: HashSet<WindowId>,
-    /// The window manager's own (own_window): never focused, never listed.
+    /// The window manager's own: never focused, never listed.
     owned: HashSet<WindowId>,
-    /// Windows on their way to where they're placed.
     animations: HashMap<WindowId, animation::Animation>,
-    /// Where each window was placed last, in which scene: where it's
-    /// drawn, unless it's on its way there.
     placed: HashMap<WindowId, (SceneId, Rectangle<i32, Logical>)>,
-    /// Windows last resized from their start (left, top): while their
-    /// client catches up, they're drawn from the edge that stays.
+    /// Resized from the left, top: drawn from the right, bottom meanwhile.
     from_end: HashMap<WindowId, (bool, bool)>,
-    /// How windows move, as the window manager set it for all of them
-    /// (None: they don't), and for some on their own.
     animation: Option<Setting>,
     animation_of: HashMap<WindowId, Setting>,
-    /// The workspace the window manager says each is on (None: all).
+    /// None: on every workspace.
     workspaces: HashMap<WindowId, Option<WorkspaceId>>,
-    next: u32,
 }
 
 impl Windows {
-    /// Keep window under a new id, and tag its surface with it (an X
-    /// window has one by then: surface_associated).
-    pub fn insert(&mut self, window: Window) -> WindowId {
-        self.next += 1;
-        let id = WindowId(self.next);
+    /// An X window has its surface by then (surface_associated).
+    fn insert(&mut self, id: WindowId, window: Window) {
         if let Some(surface) = window.wl_surface() {
             with_states(&surface, |s| s.data_map.insert_if_missing(|| id));
         }
         self.by_id.insert(id, window);
-        id
     }
 
     /// The window id belongs to, for example: a dialog's main window.
@@ -203,7 +165,7 @@ impl Windows {
             .map(|(id, _)| *id)
     }
 
-    pub fn remove(&mut self, id: WindowId) -> Option<Window> {
+    fn remove(&mut self, id: WindowId) -> Option<Window> {
         if self.focused == Some(id) {
             self.focused = None;
         }
@@ -454,13 +416,11 @@ pub fn toplevel_names(toplevel: &ToplevelSurface) -> Names {
 }
 
 impl Wayluck {
-    /// A client's new window: kept, not shown until a window manager places
-    /// it (which hears of it at its first commit).
-    /// With no window manager, shown a step down and right of the last one.
+    /// Not shown until a window manager places it, which hears of it at its
+    /// first commit; with none, cascaded.
     pub fn add_window(&mut self, window: Window) -> WindowId {
-        let id = self.windows.insert(window.clone());
-        // Its redraws may be held back for a transaction (an X window has
-        // its surface by now).
+        let id = self.spawn(despawn_window);
+        self.windows.insert(id, window.clone());
         if let Some(surface) = window.wl_surface() {
             add_pre_commit_hook::<Self, _>(&surface, |state, _, surface| state.hold_back(surface));
         }
@@ -472,21 +432,6 @@ impl Wayluck {
         id
     }
 
-    /// A window's client closed it, or went away.
-    pub fn remove_window(&mut self, id: WindowId) {
-        self.scenes.take_out(id);
-        self.unlist_window(id);
-        self.stop_capture_sessions(&image_capture::Source::Window(id));
-        if let Some(window) = self.windows.remove(id) {
-            self.space.unmap_elem(&window);
-            self.queue_redraw();
-        }
-        self.stop_waiting_for(id);
-        self.wm_window_closed(id);
-    }
-}
-
-impl Wayluck {
     /// No window manager to wait for any more: windows still waiting for
     /// their first configure get it, empty (the client picks its size).
     pub fn configure_waiting(&mut self) {
@@ -496,4 +441,17 @@ impl Wayluck {
             }
         }
     }
+}
+
+fn despawn_window(state: &mut Wayluck, entity: Entity) {
+    let id = WindowId::of_despawned(entity);
+    state.scenes.take_out(id);
+    state.unlist_window(id);
+    state.stop_capture_sessions(&image_capture::Source::Window(id));
+    if let Some(window) = state.windows.remove(id) {
+        state.space.unmap_elem(&window);
+        state.queue_redraw();
+    }
+    state.stop_waiting_for(id);
+    state.wm_window_closed(id);
 }

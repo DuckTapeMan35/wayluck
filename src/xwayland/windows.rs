@@ -58,7 +58,7 @@ pub(super) fn map_request(window: &X11Surface) {
 pub(super) fn unmapped(state: &mut Wayluck, window: &X11Surface) {
     if let Some(id) = state.windows.find_x11(window) {
         tracing::info!("X: window {} ({id}) hidden", window.window_id());
-        state.remove_window(id);
+        state.despawn(id.entity());
     }
     if !window.is_override_redirect() {
         let _ = window.set_mapped(false);
@@ -68,7 +68,7 @@ pub(super) fn unmapped(state: &mut Wayluck, window: &X11Surface) {
 pub(super) fn destroyed(state: &mut Wayluck, window: &X11Surface) {
     if let Some(id) = state.windows.find_x11(window) {
         tracing::info!("X: window {} ({id}) gone", window.window_id());
-        state.remove_window(id);
+        state.despawn(id.entity());
     }
 }
 

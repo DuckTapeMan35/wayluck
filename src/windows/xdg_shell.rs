@@ -27,7 +27,7 @@ impl XdgShellHandler for Wayluck {
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         if let Some(id) = Windows::id_of(surface.wl_surface()) {
             tracing::info!("window {id} closed: {}", title_of(&surface));
-            self.remove_window(id);
+            self.despawn(id.entity());
         }
     }
 

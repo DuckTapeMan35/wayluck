@@ -4,6 +4,7 @@ use crate::{
     capture::image_capture::ImageCapture,
     capture::picker::Picking,
     capture::screencopy,
+    entities::Entities,
     layers::look::Look,
     monitors::{Monitor, management::OutputManagement},
     render::cursor::Cursor,
@@ -122,6 +123,8 @@ pub struct Wayluck {
     pub workspaces: Workspaces,
     /// wayluck's own scene, shown when there's no window manager.
     pub own_scene: SceneId,
+    /// Every entity there is, and how each goes.
+    pub entities: Entities,
     /// Outputs with a screen behind them, left to right.
     pub monitors: Vec<Monitor>,
     /// Tools that arrange the monitors, and what they were told.
@@ -296,6 +299,7 @@ impl Wayluck {
             workspaces: Default::default(),
             own_scene,
             monitors: Vec::new(),
+            entities: Default::default(),
             output_management: Default::default(),
             virtuals: Vec::new(),
             virtual_count: 0,
